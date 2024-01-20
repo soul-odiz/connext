@@ -1,0 +1,7 @@
+flask_socketio==5.3.6
+flask==3.0
+itsdangerous==2.1.2
+geopy==2.4.1
+flask_migrate==4.0.5
+flask_jwt_extended==4.6.0
+flask_cors==4.0.0

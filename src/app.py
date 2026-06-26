@@ -69,10 +69,11 @@ def create_app():
             'Generate one with: python -c "import secrets; print(secrets.token_hex(64))"'
         )
     app.config['SECRET_KEY'] = secret_key
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-        'DATABASE_URL',
-        'sqlite:///dating_app.db'
-    )
+    # Use an absolute path for SQLite so the DB location is consistent
+    # regardless of which directory the app is launched from.
+    _src_dir = os.path.dirname(os.path.abspath(__file__))
+    _default_db = 'sqlite:///' + os.path.join(_src_dir, 'instance', 'dating_app.db').replace('\\', '/')
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', _default_db)
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
         'pool_size': int(os.environ.get('DB_POOL_SIZE', '10')),
@@ -1317,10 +1318,13 @@ def get_matches():
     """Return all completed match sessions for the current user."""
     current_user_id = get_current_user_id()
 
+    # Include all post-match statuses so the match persists in "My Matches"
+    # even if only one side has set a date (status may be 'filters_off' not yet 'completed')
+    VISIBLE_STATUSES = ('matched', 'audio_call', 'video_call', 'filters_off', 'completed')
     sessions = MatchSession.query.filter(
         ((MatchSession.user1_id == current_user_id) |
          (MatchSession.user2_id == current_user_id)),
-        MatchSession.status == 'completed'
+        MatchSession.status.in_(VISIBLE_STATUSES)
     ).order_by(MatchSession.created_at.desc()).all()
 
     matches = []

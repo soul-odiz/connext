@@ -1,0 +1,74 @@
+# ============ LOCAL DEVELOPMENT WITH POSTGRESQL ============
+# Run: docker-compose up --build
+# This provides a production-like environment locally
+
+version: '3.8'
+
+services:
+  # PostgreSQL database
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: connextdb
+      POSTGRES_USER: connext_user
+      POSTGRES_PASSWORD: dev_password_change_in_production
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U connext_user -d connextdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for rate limiting & caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Flask backend with Gunicorn + Eventlet
+  backend:
+    build:
+      context: ./src
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: postgresql://connext_user:dev_password_change_in_production@db:5432/connextdb
+      JWT_SECRET_KEY: dev_jwt_secret_change_in_production_abc123xyz
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:3000
+      FLASK_ENV: production
+      FLASK_DEBUG: "0"
+      GEOCOPY_USER_AGENT: ConnextApp/1.0 (dev@example.com)
+      LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/app/uploads
+
+  # React frontend served by nginx
+  frontend:
+    build:
+      context: ./connextproj
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_BASE_URL: http://localhost:5000
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  uploads_data:

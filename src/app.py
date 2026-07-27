@@ -56,6 +56,27 @@ logger = logging.getLogger('connext')
 logger.addHandler(log_handler)
 logger.setLevel(os.environ.get('LOG_LEVEL', 'INFO').upper())
 
+# Sentry error monitoring (initialized after logger is set up)
+import sentry_sdk
+from sentry_sdk.integrations.flask import FlaskIntegration
+from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+
+SENTRY_DSN = os.environ.get('SENTRY_DSN')
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            FlaskIntegration(),
+            SqlalchemyIntegration(),
+        ],
+        traces_sample_rate=float(os.environ.get('SENTRY_TRACES_SAMPLE_RATE', '0.1')),
+        environment=os.environ.get('FLASK_ENV', 'development'),
+        send_default_pii=False,
+    )
+    logger.info('Sentry error monitoring initialized')
+else:
+    logger.info('Sentry not configured — set SENTRY_DSN environment variable to enable')
+
 # ============ APPLICATION FACTORY ============
 
 def create_app():
@@ -121,9 +142,22 @@ def create_app():
 
     # ── Rate Limiting ───────────────────────────────────────────────────
     redis_url = os.environ.get('REDIS_URL')
+    if redis_url and redis_url.startswith('rediss://'):
+        # Azure Cache for Redis requires SSL on port 6380.
+        # The `rediss://` scheme tells the redis-py client to use SSL.
+        # flask-limiter 3.5.0 + limits 2.8+ pass the URL through to redis.from_url().
+        # If ssl_cert_reqs is needed, append to the URL: ?ssl_cert_reqs=CERT_NONE
+        storage_uri = redis_url
+        logger.info('Rate limiter using Redis with SSL (Azure Redis compatible)')
+    elif redis_url:
+        storage_uri = redis_url
+        logger.info('Rate limiter using Redis (non-SSL)')
+    else:
+        storage_uri = 'memory://'
+        logger.warning('No REDIS_URL set – rate limiter using in-memory storage (NOT suitable for multi-replica production)')
     limiter = Limiter(
         key_func=get_remote_address,
-        storage_uri=redis_url if redis_url else 'memory://',
+        storage_uri=storage_uri,
         default_limits=[
             os.environ.get('RATE_LIMIT_DEFAULT', '200 per day, 50 per hour')
         ],
@@ -729,10 +763,15 @@ def set_date():
     if not partner_id or not date_time:
         return jsonify({'message': 'partner_id and date_time are required'}), 400
 
+    try:
+        parsed_date_time = datetime.fromisoformat(str(date_time).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return jsonify({'message': 'date_time must be a valid ISO 8601 datetime'}), 400
+
     new_date = DateDetails(
         user1_id=current_user_id,
         user2_id=partner_id,
-        date_time=date_time,
+        date_time=parsed_date_time,
         location=location
     )
     db.session.add(new_date)

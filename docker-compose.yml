@@ -49,6 +49,9 @@ services:
       FLASK_DEBUG: "0"
       GEOCOPY_USER_AGENT: ConnextApp/1.0 (dev@example.com)
       LOG_LEVEL: INFO
+      # Optional: set SENTRY_DSN in your shell or a local .env file.
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
     depends_on:
       db:
         condition: service_healthy

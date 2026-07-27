@@ -6,13 +6,15 @@ flask_cors==4.0.0
 flask_limiter==3.5.0
 geopy==2.4.1
 gunicorn==21.2.0
-eventlet==0.33.3
+eventlet==0.36.1
 marshmallow==3.20.1
 marshmallow_sqlalchemy==0.30.0
 boto3==1.28.62
+azure_storage_blob==12.19.0
 python_json_logger==2.0.7
 psycopg2_binary==2.9.9
 redis==5.0.1
 python_dotenv==1.0.0
 werkzeug==3.0.1
 sqlalchemy==2.0.23
+sentry_sdk==2.64.0

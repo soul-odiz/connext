@@ -1,0 +1,31 @@
+remote: error: GH013: Repository rule violations found for refs/heads/master.        
+remote: 
+remote: - GITHUB PUSH PROTECTION        
+remote:   —————————————————————————————————————————        
+remote:     Resolve the following violations before pushing again        
+remote: 
+remote:     - Push cannot contain secrets        
+remote: 
+remote:             
+remote:      (?) Learn how to resolve a blocked push        
+remote:      https://docs.github.com/code-security/secret-scanning/working-with-secret-scanning-and-push-protection/working-with-push-protection-from-the-command-line#resolving-a-blocked-push        
+remote:             
+remote:      (?) This repository does not have Secret Scanning enabled, but is eligible. Enable Secret Scanning to view and manage detected secrets.        
+remote:      Visit the repository settings page, https://github.com/soul-odiz/connext/settings/security_analysis        
+remote:             
+remote:             
+remote:       —— Azure Storage Account Access Key ——————————————————        
+remote:        locations:        
+remote:          - commit: 8e527422acdb33c56b21316cbed2761c01ed6178        
+remote:            path: SERVER_REFERENCE.md:60        
+remote:          - commit: 8e527422acdb33c56b21316cbed2761c01ed6178        
+remote:            path: src/.env.production:29        
+remote:             
+remote:        (?) To push, remove secret from commit(s) or follow this URL to allow the secret.        
+remote:        https://github.com/soul-odiz/connext/security/secret-scanning/unblock-secret/3IgQUc7gRxwqc6xwklk2rBD6O8D        
+remote:             
+remote: 
+remote: 
+To https://github.com/soul-odiz/connext.git
+ ! [remote rejected] master -> master (push declined due to repository rule violations)
+error: failed to push some refs to 'https://github.com/soul-odiz/connext.git'

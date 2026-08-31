@@ -929,15 +929,15 @@ function App() {
             {isMyTurnToSpeak && <p className="speaking-hint">You are unmuted - speak now</p>}
             {!isMyTurnToSpeak && <p className="muted-hint">You are muted - listen to your partner</p>}
           </div>
-          {/* Volume slider for partner audio */}
-          <div className="volume-slider-wrapper">
-            <label className="volume-slider-label">🔊 Volume</label>
+          {/* Volume slider - vertical, left side */}
+          <div className="audio-volume-left">
             <input type="range" min="0" max="1" step="0.05" value={remoteVolume}
-              onChange={(e) => setRemoteVolume(parseFloat(e.target.value))} className="volume-slider" />
+              onChange={(e) => setRemoteVolume(parseFloat(e.target.value))} className="volume-slider-vertical" />
+            <label className="volume-slider-label">🔊</label>
           </div>
           {/* Hang up button - icon only */}
           <div className="audio-hangup-wrapper">
-            <button className="hangup-button" onClick={handleReturnToLobby} title="End call">📞</button>
+            <button className="hangup-button" onClick={handleReturnToLobby} title="End call"><span className="hangup-icon">📞</span></button>
           </div>
         </div>
         <audio ref={localAudioRef} autoPlay muted />

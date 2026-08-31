@@ -2,6 +2,7 @@ import React, { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
 import { UserContext } from './UserContext';
 import API_BASE_URL from '../config';
+import Avatar from './Avatar';
 import PartnerProfileModal from './PartnerProfileModal';
 
 const MatchesPage = ({ currentUser, token: propToken, socket, onClose, onOpenChat }) => {
@@ -80,17 +81,13 @@ const MatchesPage = ({ currentUser, token: propToken, socket, onClose, onOpenCha
                 <div key={match.partner_id} className="match-card">
                   {/* Avatar */}
                   <div className="match-card-avatar">
-                    {match.partner_image ? (
-                      <img
-                        src={match.partner_image.startsWith('http') ? match.partner_image : `${API_BASE_URL}${match.partner_image}`}
-                        alt={match.partner_username}
-                        className="match-card-img"
-                      />
-                    ) : (
-                      <div className="match-card-avatar-placeholder">
-                        {match.partner_username ? match.partner_username[0].toUpperCase() : '?'}
-                      </div>
-                    )}
+                    <Avatar
+                      src={match.partner_image ? (match.partner_image.startsWith('http') ? match.partner_image : `${API_BASE_URL}${match.partner_image}`) : null}
+                      alt={match.partner_username}
+                      placeholder={match.partner_username ? match.partner_username[0].toUpperCase() : '?'}
+                      imgClass="match-card-img"
+                      fallbackClass="match-card-avatar-placeholder"
+                    />
                     <div className="match-card-online-dot"></div>
                   </div>
 

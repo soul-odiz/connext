@@ -101,6 +101,97 @@ class TestRegistration:
         assert 'city' in response.get_json()['message'].lower()
 
 
+class TestOAuthLogin:
+    """Firebase OAuth login endpoint tests."""
+
+    def test_oauth_login_requires_token(self, client, monkeypatch):
+        """Missing id_token should return 400."""
+        import app as app_module
+
+        class FakeAuth:
+            @staticmethod
+            def verify_id_token(token, check_revoked=False):
+                raise AssertionError('should not be called without a token')
+
+        monkeypatch.setattr(app_module, 'FIREBASE_AUTH', FakeAuth)
+        response = client.post('/oauth_login', json={})
+        assert response.status_code == 400
+        assert 'id_token' in response.get_json()['message'].lower()
+
+    def test_oauth_login_when_firebase_not_configured(self, client, monkeypatch):
+        """When Firebase is disabled, return 503 with a clear message."""
+        import app as app_module
+        monkeypatch.setattr(app_module, 'FIREBASE_AUTH', None)
+        response = client.post('/oauth_login', json={'id_token': 'some-token'})
+        assert response.status_code == 503
+        assert 'not configured' in response.get_json()['message'].lower()
+
+    def test_oauth_login_creates_new_user(self, client, monkeypatch):
+        """A valid Firebase token should create + log in a new user."""
+        import app as app_module
+
+        class FakeDecoded:
+            def get(self, key, default=None):
+                return {
+                    'uid': 'firebase-uid-123',
+                    'email': 'new@example.com',
+                    'email_verified': True,
+                    'name': 'New User',
+                    'firebase': {'sign_in_provider': 'google.com'},
+                }.get(key, default)
+
+        class FakeAuth:
+            @staticmethod
+            def verify_id_token(token, check_revoked=False):
+                assert token == 'valid-token'
+                return FakeDecoded()
+
+        monkeypatch.setattr(app_module, 'FIREBASE_AUTH', FakeAuth)
+
+        response = client.post('/oauth_login', json={
+            'id_token': 'valid-token', 'provider': 'google'
+        })
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data['access_token'].count('.') == 2
+        assert data['is_new_user'] is True
+        assert data['user']['email'] == 'new@example.com'
+        assert data['user']['auth_provider'] == 'google'
+        assert data['user']['email_verified'] is True
+
+    def test_oauth_login_existing_email_links_account(self, client, monkeypatch):
+        """Logging in with an email that already exists should link to that user."""
+        import app as app_module
+
+        # First create a local user with that email via register-compatible fields
+        client.post('/register', data={
+            'username': 'existed', 'password': 'password123', 'age': '25',
+            'gender': 'male', 'city': 'Tel Aviv', 'preferredGender': 'female',
+        })
+
+        class FakeDecoded:
+            def get(self, key, default=None):
+                return {
+                    'uid': 'firebase-uid-456',
+                    'email': 'existed@example.com',
+                    'email_verified': True,
+                    'name': 'Existed',
+                    'firebase': {'sign_in_provider': 'apple.com'},
+                }.get(key, default)
+
+        class FakeAuth:
+            @staticmethod
+            def verify_id_token(token, check_revoked=False):
+                return FakeDecoded()
+
+        monkeypatch.setattr(app_module, 'FIREBASE_AUTH', FakeAuth)
+
+        response = client.post('/oauth_login', json={'id_token': 'x'})
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data['user']['auth_provider'] == 'apple'
+
+
 class TestLogin:
     """User login tests."""
 

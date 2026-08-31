@@ -2,6 +2,7 @@ import React, { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
 import { UserContext } from './UserContext';
 import API_BASE_URL from '../config';
+import Avatar from './Avatar';
 
 const PartnerProfileModal = ({ partnerId, partnerUsername, onClose }) => {
   const { token: ctxToken } = useContext(UserContext);
@@ -51,21 +52,13 @@ const PartnerProfileModal = ({ partnerId, partnerUsername, onClose }) => {
           <>
             {/* Avatar / photo */}
             <div className="partner-profile-hero">
-              {profile.profile_image ? (
-                <img
-                  className="partner-profile-photo"
-                  src={
-                    profile.profile_image.startsWith('http')
-                      ? profile.profile_image
-                      : `${API_BASE_URL}${profile.profile_image}`
-                  }
-                  alt={profile.username}
-                />
-              ) : (
-                <div className="partner-profile-avatar-placeholder">
-                  {profile.username?.[0]?.toUpperCase() || '?'}
-                </div>
-              )}
+              <Avatar
+                src={profile.profile_image ? (profile.profile_image.startsWith('http') ? profile.profile_image : `${API_BASE_URL}${profile.profile_image}`) : null}
+                alt={profile.username}
+                placeholder={profile.username?.[0]?.toUpperCase() || '?'}
+                imgClass="partner-profile-photo"
+                fallbackClass="partner-profile-avatar-placeholder"
+              />
               <div className="partner-profile-hero-overlay">
                 <h2 className="partner-profile-name">{profile.username}</h2>
                 <p className="partner-profile-meta">

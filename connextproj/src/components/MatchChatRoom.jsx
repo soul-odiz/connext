@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useContext } from 'rea
 import axios from 'axios';
 import { UserContext } from './UserContext';
 import API_BASE_URL from '../config';
+import Avatar from './Avatar';
 
 // Helper: clear all auth state on token expiry / invalidity
 const clearAuthState = (setToken, setCurrentUser) => {
@@ -185,14 +186,13 @@ const MatchChatRoom = ({ currentUser, match, socket, onClose, onStartVideoCall, 
           <button className="match-chatroom-back" onClick={onClose}>‹</button>
           <div className="match-chatroom-partner">
             <div className="match-chatroom-avatar">
-              {match.partner_image ? (
-                <img
-                  src={match.partner_image.startsWith('http') ? match.partner_image : `${API_BASE_URL}${match.partner_image}`}
-                  alt={match.partner_username}
-                />
-              ) : (
-                <span>{match.partner_username?.[0]?.toUpperCase() || '?'}</span>
-              )}
+              <Avatar
+                src={match.partner_image ? (match.partner_image.startsWith('http') ? match.partner_image : `${API_BASE_URL}${match.partner_image}`) : null}
+                alt={match.partner_username}
+                placeholder={match.partner_username?.[0]?.toUpperCase() || '?'}
+                imgClass="match-chatroom-avatar-img"
+                fallbackClass="match-chatroom-avatar-fallback"
+              />
             </div>
             <div>
               <h3 className="match-chatroom-name">{match.partner_username}</h3>

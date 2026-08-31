@@ -16,14 +16,16 @@ Features:
 """
 
 import os
+import re
 import json
 import uuid
 import logging
 import random
+import mimetypes
 from datetime import datetime, timedelta
 from math import radians, cos, sin, asin, sqrt
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, redirect
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_jwt_extended import (
@@ -77,6 +79,29 @@ if SENTRY_DSN:
 else:
     logger.info('Sentry not configured — set SENTRY_DSN environment variable to enable')
 
+# Firebase Admin SDK (optional — used when FIREBASE_SERVICE_ACCOUNT is set)
+_firebase_app = None
+try:
+    import firebase_admin
+    from firebase_admin import credentials, auth as firebase_auth
+    FIREBASE_SERVICE_ACCOUNT_B64 = os.environ.get('FIREBASE_SERVICE_ACCOUNT_B64')
+    if FIREBASE_SERVICE_ACCOUNT_B64:
+        import base64
+        _sa_json = base64.b64decode(FIREBASE_SERVICE_ACCOUNT_B64).decode('utf-8')
+        _cred = credentials.Certificate(json.loads(_sa_json))
+        _firebase_app = firebase_admin.initialize_app(_cred)
+        FIREBASE_AUTH = firebase_auth
+        logger.info('Firebase Admin SDK initialized')
+    else:
+        FIREBASE_AUTH = None
+        logger.info('Firebase not configured — set FIREBASE_SERVICE_ACCOUNT_B64 to enable')
+except ImportError:
+    FIREBASE_AUTH = None
+    logger.warning('firebase-admin not installed — Firebase auth disabled')
+except Exception as e:
+    FIREBASE_AUTH = None
+    logger.error('Firebase Admin SDK initialization failed', extra={'error': str(e)})
+
 # ============ APPLICATION FACTORY ============
 
 def create_app():
@@ -125,14 +150,14 @@ def create_app():
         os.path.dirname(__file__), 'uploads'
     )
     app.config['MAX_CONTENT_LENGTH'] = int(
-        os.environ.get('MAX_UPLOAD_SIZE_MB', '10')
-    ) * 1024 * 1024  # 10 MB default
+        os.environ.get('MAX_UPLOAD_SIZE_MB', '25')
+    ) * 1024 * 1024  # 25 MB default
     app.config['UPLOAD_PROVIDER'] = os.environ.get('UPLOAD_PROVIDER', 'local')
 
     # ── CORS ────────────────────────────────────────────────────────────
     cors_origins_str = os.environ.get(
         'CORS_ORIGINS',
-        'http://localhost:3000,https://connextfront.kindmoss-4634ec14.germanywestcentral.azurecontainerapps.io'
+        'http://localhost:3000,https://connext-frontend.bluedune-2855dd8a.germanywestcentral.azurecontainerapps.io'
     )
     cors_origins = [o.strip() for o in cors_origins_str.split(',') if o.strip()]
     CORS(app, resources={r"/*": {"origins": cors_origins}}, supports_credentials=True)
@@ -218,7 +243,7 @@ class User(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False, index=True)
-    password_hash = db.Column(db.String(120), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=True)
     age = db.Column(db.Integer)
     gender = db.Column(db.String(10), index=True)
     bio = db.Column(db.String(500))
@@ -231,6 +256,10 @@ class User(db.Model):
     latitude = db.Column(db.Float)
     longitude = db.Column(db.Float)
     phone_number = db.Column(db.String(15))
+    email = db.Column(db.String(255), unique=True, index=True, nullable=True)
+    auth_provider = db.Column(db.String(20), default='local', nullable=False, server_default='local')
+    email_verified = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
+    firebase_uid = db.Column(db.String(128), unique=True, index=True, nullable=True)
     is_in_queue = db.Column(db.Boolean, default=False, index=True)
     current_session_id = db.Column(db.String(50), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -258,6 +287,18 @@ class User(db.Model):
             'interests': json.loads(self.interests) if self.interests else [],
             'city': self.city,
             'profile_image': '/uploads/' + self.profile_image if self.profile_image else None,
+            'preferred_gender': self.preferred_gender,
+            'preferred_age_min': self.preferred_age_min,
+            'preferred_age_max': self.preferred_age_max,
+            'preferredAgeRange': {'min': self.preferred_age_min, 'max': self.preferred_age_max},
+            'preferredGender': self.preferred_gender,
+            'phone_number': self.phone_number,
+            'phoneNumber': self.phone_number,
+            'email': self.email,
+            'auth_provider': self.auth_provider,
+            'email_verified': bool(self.email_verified),
+            'firebase_uid': self.firebase_uid,
+            'profile_complete': bool(self.gender and self.age and self.city and self.preferred_gender),
         }
 
 
@@ -329,29 +370,71 @@ class MatchQueue(db.Model):
 # ============ DATABASE INIT ============
 
 def ensure_sqlite_schema_updates():
-    """Add columns that db.create_all() will not add to an existing SQLite DB.
-    Only runs for SQLite (dev) databases. Production uses Alembic migrations.
+    """Add columns that db.create_all() will not add to an existing database.
+
+    For SQLite (local dev) this uses PRAGMA introspection. For PostgreSQL
+    (production) it uses information_schema and ALTER TABLE ... ADD COLUMN IF
+    NOT EXISTS so a freshly deployed backend can self-heal its schema.
     """
-    if db.engine.dialect.name != 'sqlite':
+    dialect = db.engine.dialect.name
+
+    if dialect == 'sqlite':
+        with db.engine.begin() as connection:
+            existing_columns = {
+                row[1]
+                for row in connection.execute(text('PRAGMA table_info("user")')).fetchall()
+            }
+            added = []
+            for col, ddl in [
+                ('is_in_queue', 'BOOLEAN DEFAULT 0'),
+                ('current_session_id', 'VARCHAR(50)'),
+                ('created_at', 'TIMESTAMP'),
+                ('last_active', 'TIMESTAMP'),
+                ('email', 'VARCHAR(255)'),
+                ('auth_provider', "VARCHAR(20) DEFAULT 'local'"),
+                ('email_verified', 'BOOLEAN DEFAULT 0'),
+                ('firebase_uid', 'VARCHAR(128)'),
+            ]:
+                if col not in existing_columns:
+                    connection.execute(text(f'ALTER TABLE "user" ADD COLUMN {col} {ddl}'))
+                    added.append(col)
+            if added:
+                logger.info('SQLite schema updated', extra={'columns': added})
         return
 
-    with db.engine.begin() as connection:
-        existing_columns = {
-            row[1]
-            for row in connection.execute(text('PRAGMA table_info("user")')).fetchall()
-        }
+    if dialect == 'postgresql':
+        with db.engine.begin() as connection:
+            # Find which columns already exist
+            existing_columns = {
+                row[0] for row in connection.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'user'"
+                )).fetchall()
+            }
+            added = []
+            for col, ddl in [
+                ('email', 'VARCHAR(255)'),
+                ('auth_provider', "VARCHAR(20) NOT NULL DEFAULT 'local'"),
+                ('email_verified', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+                ('firebase_uid', 'VARCHAR(128)'),
+            ]:
+                if col not in existing_columns:
+                    connection.execute(text(
+                        f'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS {col} {ddl}'
+                    ))
+                    added.append(col)
+            # Ensure indexes exist for lookups
+            connection.execute(text(
+                'CREATE INDEX IF NOT EXISTS ix_user_email ON "user" (email)'
+            ))
+            connection.execute(text(
+                'CREATE INDEX IF NOT EXISTS ix_user_firebase_uid ON "user" (firebase_uid)'
+            ))
+            if added:
+                logger.info('PostgreSQL schema updated', extra={'columns': added})
+        return
 
-        if 'is_in_queue' not in existing_columns:
-            connection.execute(text('ALTER TABLE "user" ADD COLUMN is_in_queue BOOLEAN DEFAULT 0'))
-
-        if 'current_session_id' not in existing_columns:
-            connection.execute(text('ALTER TABLE "user" ADD COLUMN current_session_id VARCHAR(50)'))
-
-        if 'created_at' not in existing_columns:
-            connection.execute(text('ALTER TABLE "user" ADD COLUMN created_at TIMESTAMP'))
-
-        if 'last_active' not in existing_columns:
-            connection.execute(text('ALTER TABLE "user" ADD COLUMN last_active TIMESTAMP'))
+    logger.debug('No auto schema update for dialect %s', dialect)
 
 
 with app.app_context():
@@ -363,6 +446,26 @@ with app.app_context():
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def detect_content_type(filename):
+    """Return a proper MIME type for an uploaded image filename.
+
+    Falls back to image/jpeg if the extension is unknown so that
+    browsers can render the file inside an <img> tag.
+    """
+    mime, _ = mimetypes.guess_type(filename)
+    if mime and mime.startswith('image/'):
+        return mime
+    # Explicit map for formats mimetypes may miss
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    return {
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'gif': 'image/gif',
+        'webp': 'image/webp',
+    }.get(ext, 'image/jpeg')
 
 
 def haversine(lon1, lat1, lon2, lat2):
@@ -422,6 +525,15 @@ def generate_session_id():
     return str(uuid.uuid4())
 
 
+def sanitize_username(raw, fallback='user'):
+    """Build a safe, unique username from an email/display name prefix."""
+    base = re.sub(r'[^A-Za-z0-9_.]', '', raw or '').lower()
+    base = base[:20] if base else fallback
+    if User.query.filter_by(username=base).first():
+        base = f'{base}_{uuid.uuid4().hex[:6]}'
+    return base
+
+
 def get_current_user_id():
     """Return the JWT identity as an integer user id."""
     return int(get_jwt_identity())
@@ -438,13 +550,17 @@ def save_upload(file):
     elif provider == 'azure_blob':
         # Azure Blob Storage upload
         try:
-            from azure.storage.blob import BlobServiceClient
+            from azure.storage.blob import BlobServiceClient, ContentSettings
             conn_str = os.environ['AZURE_STORAGE_CONNECTION_STRING']
             container = os.environ['AZURE_STORAGE_CONTAINER']
             blob_client = BlobServiceClient.from_connection_string(conn_str).get_blob_client(
                 container=container, blob=filename
             )
-            blob_client.upload_blob(file, overwrite=True)
+            blob_client.upload_blob(
+                file,
+                overwrite=True,
+                content_settings=ContentSettings(content_type=detect_content_type(filename)),
+            )
             return filename
         except Exception as e:
             logger.error('Azure Blob upload failed', extra={'error': str(e), 'filename': filename})
@@ -521,14 +637,21 @@ def register():
     interests = data.get('interests', '[]')
     phone_number = data.get('phoneNumber', '')
     city = data.get('city', '').strip()
+    # Optional Firebase-linked fields (email sign-up or social sign-up fallback)
+    email = data.get('email', '').strip().lower() or None
+    firebase_uid = data.get('firebase_uid', '').strip() or None
+    auth_provider = data.get('auth_provider', '').strip().lower() or 'local'
 
     # ── Input Validation ────────────────────────────────────────────────
     if not username or len(username) < 3:
         return jsonify({'message': 'Username must be at least 3 characters'}), 400
     if len(username) > 80:
         return jsonify({'message': 'Username must be 80 characters or less'}), 400
-    if not password or len(password) < 6:
+    # Password is optional for Firebase-linked accounts (they have no app password)
+    if auth_provider == 'local' and (not password or len(password) < 6):
         return jsonify({'message': 'Password must be at least 6 characters'}), 400
+    if email and not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+        return jsonify({'message': 'Invalid email address'}), 400
     if not age or not age.isdigit() or int(age) < 18 or int(age) > 120:
         return jsonify({'message': 'Age must be between 18 and 120'}), 400
     # Normalize gender to lowercase to match frontend capitalized values (Male/Female/Other)
@@ -554,6 +677,9 @@ def register():
     # Check username uniqueness
     if User.query.filter_by(username=username).first():
         return jsonify({'message': 'Username already exists'}), 400
+    # Check email uniqueness (only when an email is provided)
+    if email and User.query.filter_by(email=email).first():
+        return jsonify({'message': 'An account with this email already exists. Please sign in.'}), 400
 
     # Geocode city
     try:
@@ -590,9 +716,14 @@ def register():
         city=city,
         latitude=location.latitude,
         longitude=location.longitude,
-        phone_number=phone_number
+        phone_number=phone_number,
+        email=email,
+        firebase_uid=firebase_uid,
+        auth_provider=auth_provider,
+        email_verified=(auth_provider != 'local'),
     )
-    new_user.set_password(password)
+    if auth_provider == 'local':
+        new_user.set_password(password)
     db.session.add(new_user)
     db.session.commit()
 
@@ -619,10 +750,91 @@ def login():
         return jsonify(
             access_token=access_token,
             user_id=user.id,
-            username=user.username
+            username=user.username,
+            user=user.to_public_dict()
         ), 200
 
     return jsonify({'message': 'Invalid username or password'}), 401
+
+
+@app.route('/oauth_login', methods=['POST'])
+@limiter.limit(os.environ.get('RATE_LIMIT_LOGIN', '20 per hour'))
+def oauth_login():
+    """Verify a Firebase ID token and log in / create the user."""
+    if FIREBASE_AUTH is None:
+        return jsonify({
+            'message': 'Social login is not configured yet. Please use email or password.'
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    id_token = (data.get('id_token') or '').strip()
+    provider_hint = (data.get('provider') or '').strip().lower()
+
+    if not id_token:
+        return jsonify({'message': 'id_token is required'}), 400
+
+    try:
+        decoded = FIREBASE_AUTH.verify_id_token(id_token, check_revoked=False)
+    except Exception as e:
+        logger.warning('Failed to verify Firebase ID token', extra={'error': str(e)})
+        return jsonify({'message': 'Invalid or expired authentication token'}), 401
+
+    firebase_uid = decoded.get('uid')
+    email = (decoded.get('email') or '').strip().lower() or None
+    email_verified = bool(decoded.get('email_verified', False))
+    display_name = decoded.get('name') or ''
+
+    # Determine auth provider from the decoded token's firebase.sign_in_provider
+    sign_in_provider = (decoded.get('firebase') or {}).get('sign_in_provider', '') or provider_hint
+    if sign_in_provider in ('google.com', 'google'):
+        provider = 'google'
+    elif sign_in_provider in ('apple.com', 'apple'):
+        provider = 'apple'
+    else:
+        provider = 'password' if sign_in_provider and sign_in_provider != 'password' else 'local'
+
+    if not email and not firebase_uid:
+        return jsonify({'message': 'Unable to determine account identity'}), 400
+
+    # Find existing user by firebase_uid or email
+    user = User.query.filter(
+        (User.firebase_uid == firebase_uid) | (User.email == email)
+    ).first() if (firebase_uid or email) else None
+
+    is_new_user = False
+    if user is None:
+        is_new_user = True
+        username_base = (email or display_name or '').split('@')[0]
+        user = User(
+            username=sanitize_username(username_base),
+            email=email,
+            firebase_uid=firebase_uid,
+            auth_provider=provider,
+            email_verified=email_verified,
+            last_active=datetime.utcnow(),
+        )
+        db.session.add(user)
+    else:
+        user.firebase_uid = user.firebase_uid or firebase_uid
+        user.email = user.email or email
+        if email:
+            user.email_verified = email_verified or user.email_verified
+        user.auth_provider = provider
+        user.last_active = datetime.utcnow()
+
+    db.session.commit()
+
+    access_token = create_access_token(identity=str(user.id))
+    logger.info('Social user logged in', extra={
+        'user_id': user.id, 'provider': provider, 'is_new_user': is_new_user
+    })
+    return jsonify(
+        access_token=access_token,
+        user_id=user.id,
+        username=user.username,
+        user=user.to_public_dict(),
+        is_new_user=is_new_user,
+    ), 200
 
 
 @app.route('/update_preferences', methods=['POST'])
@@ -748,6 +960,33 @@ def get_profile_image_url(user_id):
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
+    """Serve uploaded files from local disk or Azure Blob Storage."""
+    from flask import Response
+    provider = app.config.get('UPLOAD_PROVIDER', 'local')
+    if provider == 'azure_blob':
+        try:
+            from azure.storage.blob import BlobServiceClient
+            conn_str = os.environ['AZURE_STORAGE_CONNECTION_STRING']
+            container = os.environ['AZURE_STORAGE_CONTAINER']
+            blob_client = BlobServiceClient.from_connection_string(conn_str).get_blob_client(
+                container=container, blob=filename
+            )
+            stream = blob_client.download_blob()
+            content_type = stream.properties.content_settings.content_type
+            # Some clients upload without a proper Content-Type, resulting in
+            # 'application/octet-stream' which browsers refuse to render in <img>.
+            if not content_type or content_type == 'application/octet-stream':
+                content_type = detect_content_type(filename)
+            return Response(
+                stream.readall(),
+                status=200,
+                mimetype=content_type,
+                headers={'Cache-Control': 'public, max-age=31536000'}
+            )
+        except Exception as e:
+            logger.error('Blob serve failed', extra={'error': str(e), 'filename': filename})
+            return jsonify({'message': 'Image not found'}), 404
+    # Local provider
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 
@@ -1110,6 +1349,10 @@ def handle_end_audio_call(data):
     if not match_session:
         return
 
+    # Idempotent: already transitioned — ignore duplicate
+    if match_session.status == 'video_call':
+        return
+
     match_session.status = 'video_call'
     match_session.stage_started_at = datetime.utcnow()
     db.session.commit()
@@ -1132,6 +1375,10 @@ def handle_end_video_call(data):
         return
     match_session = MatchSession.query.filter_by(session_id=session_id).first()
     if not match_session:
+        return
+
+    # Idempotent: already transitioned — ignore duplicate
+    if match_session.status == 'filters_off':
         return
 
     match_session.status = 'filters_off'
@@ -1247,12 +1494,20 @@ def on_leave(data):
 
 @socketio.on('video_chat_offer')
 def handle_video_chat_offer(data):
-    emit('video_chat_offer', {'offer': data.get('offer')}, room=data.get('room'))
+    emit('video_chat_offer', {
+        'offer': data.get('offer'),
+        'from_user_id': data.get('from_user_id'),
+        'room': data.get('room')
+    }, room=str(data.get('room')))
 
 
 @socketio.on('video_chat_answer')
 def handle_video_chat_answer(data):
-    emit('video_chat_answer', {'answer': data.get('answer')}, room=data.get('room'))
+    emit('video_chat_answer', {
+        'answer': data.get('answer'),
+        'from_user_id': data.get('from_user_id'),
+        'room': data.get('room')
+    }, room=str(data.get('room')))
 
 
 @socketio.on('audio_call_offer')
@@ -1267,10 +1522,12 @@ def handle_audio_call_answer(data):
 
 @socketio.on('ice_candidate')
 def handle_ice_candidate(data):
-    if 'partner_id' not in data:
+    partner_id = data.get('partner_id')
+    if partner_id is None:
         logger.warning('ice_candidate missing partner_id')
         return
-    emit('ice_candidate', data, room=data['partner_id'])
+    logger.info('Relaying ICE candidate', extra={'from_sid': request.sid, 'partner_id': str(partner_id)})
+    emit('ice_candidate', data, room=str(partner_id))
 
 
 # ============ VIDEO CHAT ============

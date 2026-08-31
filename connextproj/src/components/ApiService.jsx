@@ -9,6 +9,11 @@ const login = async (username, password) => {
   return apiClient.post('/login', { username, password });
 };
 
+// Verify a Firebase ID token on the backend and get our app JWT + user.
+const oauthLogin = async (idToken, provider) => {
+  return apiClient.post('/oauth_login', { id_token: idToken, provider });
+};
+
 const register = async (formData) => {
   return apiClient.post('/register', formData, {
     headers: { 'Content-Type': 'multipart/form-data' }
@@ -100,6 +105,7 @@ const handleError = (error) => {
 
 export const ApiService = {
   login,
+  oauthLogin,
   register,
   fetchMatches,
   initiatePhoneCall,

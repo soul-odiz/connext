@@ -2018,12 +2018,22 @@ html, body {
   }
 
   .video-grid {
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
   }
 
   .video-wrapper {
-    aspect-ratio: 16/9;
+    flex: 1;
+    min-height: 0;
   }
+
+  .video-con {
+    object-fit: cover;
+  }
+
+  
+
+  
 
   .match-button {
     padding: 18px 32px;

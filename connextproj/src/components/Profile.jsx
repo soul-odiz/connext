@@ -221,7 +221,7 @@ const Profile = ({ currentUser, updateProfile }) => {
                   >
                     {uploadingImage ? 'Uploading…' : '📷 Change Photo'}
                   </button>
-                  <p className="profile-photo-hint">JPG, PNG or GIF · Max 5 MB</p>
+                  <p className="profile-photo-hint">JPG, PNG or GIF · Max 25 MB</p>
                   {uploadError && <p className="profile-photo-error">{uploadError}</p>}
                 </div>
                 <input

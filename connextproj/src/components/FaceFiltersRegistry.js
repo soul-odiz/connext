@@ -707,6 +707,6 @@ export const FILTERS = {
 };
 
 export const FILTER_IDS = Object.keys(FILTERS);
-export const DEFAULT_FILTER = 'pixelate';
+export const DEFAULT_FILTER = 'dog';
 
 export default FILTERS;

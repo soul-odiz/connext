@@ -42,6 +42,7 @@ services:
       - "5000:5000"
     environment:
       DATABASE_URL: postgresql://connext_user:dev_password_change_in_production@db:5432/connextdb
+      SECRET_KEY: dev_secret_key_change_in_production
       JWT_SECRET_KEY: dev_jwt_secret_change_in_production_abc123xyz
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: http://localhost:3000
@@ -49,6 +50,8 @@ services:
       FLASK_DEBUG: "0"
       GEOCOPY_USER_AGENT: ConnextApp/1.0 (dev@example.com)
       LOG_LEVEL: INFO
+      # Optional: set FIREBASE_SERVICE_ACCOUNT_B64 in your shell / .env to enable social login.
+      FIREBASE_SERVICE_ACCOUNT_B64: ${FIREBASE_SERVICE_ACCOUNT_B64:-}
       # Optional: set SENTRY_DSN in your shell or a local .env file.
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
@@ -67,6 +70,13 @@ services:
       dockerfile: Dockerfile
       args:
         REACT_APP_API_BASE_URL: http://localhost:5000
+        # Populate from your shell / .env to enable Google/Apple/email sign-up.
+        REACT_APP_FIREBASE_API_KEY: ${REACT_APP_FIREBASE_API_KEY:-}
+        REACT_APP_FIREBASE_AUTH_DOMAIN: ${REACT_APP_FIREBASE_AUTH_DOMAIN:-}
+        REACT_APP_FIREBASE_PROJECT_ID: ${REACT_APP_FIREBASE_PROJECT_ID:-}
+        REACT_APP_FIREBASE_APP_ID: ${REACT_APP_FIREBASE_APP_ID:-}
+        REACT_APP_FIREBASE_MESSAGING_SENDER_ID: ${REACT_APP_FIREBASE_MESSAGING_SENDER_ID:-}
+        REACT_APP_FIREBASE_STORAGE_BUCKET: ${REACT_APP_FIREBASE_STORAGE_BUCKET:-}
     ports:
       - "3000:80"
     depends_on:

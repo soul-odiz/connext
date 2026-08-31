@@ -72,12 +72,15 @@ function App() {
   const [audioCallTimeLeft, setAudioCallTimeLeft] = useState(90);
   const [videoCallTimeLeft, setVideoCallTimeLeft] = useState(180);
   const [isMyTurnToSpeak, setIsMyTurnToSpeak] = useState(false);
+  const isMyTurnRef = useRef(false);
   const [firstSpeakerId, setFirstSpeakerId] = useState(null);
   const [partnerId, setPartnerId] = useState(null);
   const [partnerUsername, setPartnerUsername] = useState('');
   const [partnerAge, setPartnerAge] = useState(null);
+  const [partnerImage, setPartnerImage] = useState(null);
   const [isChatVisible, setIsChatVisible] = useState(false);
   const [remoteStream, setRemoteStream] = useState(null);
+  const [remoteVolume, setRemoteVolume] = useState(1.0);
   const [muteTimer, setMuteTimer] = useState(null);
   const localVideoRef = useRef();   // used for video element in stage 5/6
   const localAudioRef = useRef();   // used for audio element in stage 4
@@ -87,6 +90,7 @@ function App() {
   const [, setLocalStream] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const queueTimerRef = useRef(null);
+  const pendingIceCandidatesRef = useRef([]);
   const [showSetDateScreen, setShowSetDateScreen] = useState(false);
   const [filterType, setFilterType] = useState(DEFAULT_FILTER);
   const [isVideoPanelMinimized, setIsVideoPanelMinimized] = useState(false);
@@ -177,6 +181,10 @@ function App() {
       setPartnerAge(data.partner_age);
       setFirstSpeakerId(data.first_speaker_id);
       setPrepTimeLeft(data.preparation_time || 30);
+      // Capture partner profile image
+      if (data.partner_image) {
+        setPartnerImage(data.partner_image);
+      }
       
       // Go to preparation stage
       setCurrentStage(3);
@@ -212,23 +220,90 @@ function App() {
     });
 
     socket.on('video_chat_offer', async (data) => {
-      if (peerConnection.current) {
-        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
-        const answer = await peerConnection.current.createAnswer();
-        await peerConnection.current.setLocalDescription(answer);
-        socket.emit('video_chat_answer', { answer, room: data.room });
+      console.log('Received video_chat_offer:', data);
+      const pc = peerConnection.current;
+      if (!pc) {
+        console.error('No peer connection for incoming video offer');
+        return;
+      }
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        await flushPendingIceCandidates(pc);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('video_chat_answer', {
+          answer: pc.localDescription,
+          from_user_id: currentUser.id,
+          room: String(data.from_user_id || data.room || partnerId)
+        });
+        console.log('Video answer sent');
+      } catch (err) {
+        console.error('Error handling video_chat_offer:', err);
       }
     });
 
-    socket.on('video_chat_answer', (data) => {
-      if (peerConnection.current) {
-        peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.answer));
+    socket.on('video_chat_answer', async (data) => {
+      const pc = peerConnection.current;
+      if (!pc) return;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        await flushPendingIceCandidates(pc);
+      } catch (err) {
+        console.error('Error setting video answer:', err);
       }
     });
 
-    socket.on('ice_candidate', (data) => {
-      if (peerConnection.current) {
-        peerConnection.current.addIceCandidate(new RTCIceCandidate(data.candidate));
+    socket.on('audio_call_offer', async (data) => {
+      console.log('Received audio_call_offer:', data);
+      const offererId = data.from_user_id || data.partner_id || partnerId;
+      createPeerConnection(offererId);
+      const pc = peerConnection.current;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        await flushPendingIceCandidates(pc);
+        const stream = await safeGetUserMedia({ audio: true });
+        if (localAudioRef.current) {
+          localAudioRef.current.srcObject = stream;
+        }
+        stream.getTracks().forEach(track => {
+          if (pc.signalingState !== 'closed') {
+            pc.addTrack(track, stream);
+          }
+        });
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('audio_call_answer', { answer, partner_id: String(offererId) });
+      } catch (err) {
+        console.error('Error handling audio_call_offer:', err);
+      }
+    });
+
+    socket.on('audio_call_answer', async (data) => {
+      console.log('Received audio_call_answer:', data);
+      const pc = peerConnection.current;
+      if (!pc) return;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        await flushPendingIceCandidates(pc);
+      } catch (err) {
+        console.error('Error setting audio answer:', err);
+      }
+    });
+
+    socket.on('ice_candidate', async (data) => {
+      console.log('REMOTE ICE RECEIVED:', data.candidate?.type, data.candidate?.protocol, data.candidate?.address);
+      const candidate = new RTCIceCandidate(data.candidate);
+      const pc = peerConnection.current;
+      if (!pc || !pc.remoteDescription) {
+        console.log('Queueing ICE candidate');
+        pendingIceCandidatesRef.current.push(candidate);
+        return;
+      }
+      try {
+        await pc.addIceCandidate(candidate);
+        console.log('REMOTE ICE ADDED:', candidate.type, candidate.protocol, candidate.address);
+      } catch (err) {
+        console.error('Error adding ICE candidate:', err);
       }
     });
 
@@ -249,6 +324,8 @@ function App() {
       socket.off('date_proposed');
       socket.off('video_chat_offer');
       socket.off('video_chat_answer');
+      socket.off('audio_call_offer');
+      socket.off('audio_call_answer');
       socket.off('ice_candidate');
       socket.off('queue_left');
     };
@@ -286,7 +363,8 @@ function App() {
             return 0;
           }
           // Check if 45 seconds have passed for one speaker (swap at 45s remaining mark)
-          if (prev === 46 && socket && sessionId && firstSpeakerId) {
+          // Only the current speaker requests the swap to prevent double-swapping
+          if (prev === 45 && socket && sessionId && firstSpeakerId && isMyTurnRef.current) {
             socket.emit('request_turn_swap', { session_id: sessionId });
           }
           return prev - 1;
@@ -315,6 +393,11 @@ function App() {
     }
   }, [currentStage, videoCallTimeLeft, socket, sessionId]);
 
+  // Sync isMyTurnRef with isMyTurnToSpeak so timer closures read the current value
+  useEffect(() => {
+    isMyTurnRef.current = isMyTurnToSpeak;
+  }, [isMyTurnToSpeak]);
+
   // Initial auth check
   useEffect(() => {
     if (currentUser && token) {
@@ -324,6 +407,17 @@ function App() {
     }
   }, [currentUser, token]);
 
+  const flushPendingIceCandidates = async (pc) => {
+    while (pendingIceCandidatesRef.current.length > 0) {
+      const candidate = pendingIceCandidatesRef.current.shift();
+      try {
+        await pc.addIceCandidate(candidate);
+      } catch (err) {
+        console.error('Error adding queued ICE candidate:', err);
+      }
+    }
+  };
+
   const createPeerConnection = useCallback((partnerIdForCall) => {
     if (peerConnection.current) {
       peerConnection.current.close();
@@ -331,14 +425,53 @@ function App() {
     const pc = new RTCPeerConnection(ICE_SERVERS);
     peerConnection.current = pc;
 
+    console.log('PC CREATED', 'signaling=', pc.signalingState, 'ice=', pc.iceConnectionState, 'gathering=', pc.iceGatheringState, 'connection=', pc.connectionState);
+
     pc.onicecandidate = (event) => {
-      if (event.candidate && socket) {
-        socket.emit('ice_candidate', { candidate: event.candidate, partner_id: partnerIdForCall });
+      if (!event.candidate) {
+        console.log('ICE gathering finished');
+        return;
+      }
+      console.log('LOCAL ICE:', event.candidate.type, event.candidate.protocol, event.candidate.address);
+      if (socket) {
+        socket.emit('ice_candidate', { candidate: event.candidate, partner_id: String(partnerIdForCall) });
+      }
+    };
+
+    pc.onicecandidateerror = (event) => {
+      console.error('ICE candidate error:', event.errorCode, event.errorText, event.url);
+    };
+
+    pc.onicegatheringstatechange = () => {
+      console.log('ICE gathering state:', pc.iceGatheringState);
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log('ICE connection state:', pc.iceConnectionState);
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log('RTCPeerConnection state:', pc.connectionState);
+      if (pc.connectionState === 'connected') {
+        setTimeout(async () => {
+          const stats = await pc.getStats();
+          stats.forEach(report => {
+            if (report.type === 'inbound-rtp') {
+              console.log('RTP IN:', report.kind || report.mediaType, 'bytes=', report.bytesReceived, 'packets=', report.packetsReceived, 'lost=', report.packetsLost, 'frames=', report.framesDecoded);
+            }
+          });
+        }, 3000);
       }
     };
 
     pc.ontrack = (event) => {
+      console.log('Remote track received:', event.track.kind, 'readyState:', event.track.readyState, 'muted:', event.track.muted);
+      event.track.onunmute = () => console.log('Remote track UNMUTED:', event.track.kind);
+      event.track.onmute = () => console.log('Remote track MUTED:', event.track.kind);
       setRemoteStream(event.streams[0]);
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+      }
     };
 
     return pc;
@@ -405,23 +538,29 @@ function App() {
   };
 
   const handleReadyForCall = () => {
-    // Start WebRTC audio call
-    if (partnerId && socket) {
+    // Start WebRTC audio call - only offerer creates offer (deterministic: smaller id)
+    const amIOfferer = Number(currentUser?.id) < Number(partnerId);
+    if (partnerId && socket && amIOfferer) {
       createPeerConnection(partnerId);
-      // Get audio stream
       safeGetUserMedia({ audio: true })
         .then(stream => {
+          if (localAudioRef.current) {
+            localAudioRef.current.srcObject = stream;
+          }
           stream.getTracks().forEach(track => {
             if (peerConnection.current && peerConnection.current.signalingState !== 'closed') {
               peerConnection.current.addTrack(track, stream);
             }
           });
-          // Create and send offer
           return peerConnection.current.createOffer();
         })
         .then(offer => peerConnection.current.setLocalDescription(offer))
         .then(() => {
-          socket.emit('audio_call_offer', { offer: peerConnection.current.localDescription, partner_id: String(partnerId) });
+          socket.emit('audio_call_offer', {
+            offer: peerConnection.current.localDescription,
+            from_user_id: currentUser.id,
+            partner_id: String(partnerId)
+          });
         })
         .catch(err => console.error('Error setting up audio call:', err));
     }
@@ -430,29 +569,33 @@ function App() {
 
   const startVideoCall = useCallback(async () => {
     if (!partnerId || !socket) return;
-    
-    createPeerConnection(partnerId);
-    
+    const amIOfferer = Number(currentUser?.id) < Number(partnerId);
     try {
       const stream = await safeGetUserMedia({ video: true, audio: true });
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
       setLocalStream(stream);
-
+      // BOTH users create PC and add local tracks
+      const pc = createPeerConnection(partnerId);
       stream.getTracks().forEach((track) => {
-        if (peerConnection.current && peerConnection.current.signalingState !== 'closed') {
-          peerConnection.current.addTrack(track, stream);
+        if (pc.signalingState !== 'closed') {
+          pc.addTrack(track, stream);
         }
       });
-
-      const offer = await peerConnection.current.createOffer();
-      await peerConnection.current.setLocalDescription(offer);
-      socket.emit('video_chat_offer', { offer, room: partnerId });
+      // Only the offerer creates the SDP offer
+      if (!amIOfferer) return;
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('video_chat_offer', {
+        offer: pc.localDescription,
+        from_user_id: currentUser.id,
+        room: String(partnerId)
+      });
     } catch (error) {
       console.error('Error starting video call:', error);
     }
-  }, [createPeerConnection, socket, partnerId]);
+  }, [createPeerConnection, socket, partnerId, currentUser]);
 
   // Start video call when entering stage 5
   useEffect(() => {
@@ -462,10 +605,26 @@ function App() {
   }, [currentStage, startVideoCall]);
 
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
+    const el = remoteVideoRef.current;
+    if (el && remoteStream) {
+      // Only set srcObject if it changed (prevents aborting an in-progress play)
+      if (el.srcObject !== remoteStream) {
+        el.srcObject = remoteStream;
+      }
+      // Always try to play — browser may block autoplay for unmuted audio
+      el.play().then(() => {
+        console.log('Remote media play started successfully');
+      }).catch(err => {
+        console.error('Remote play error:', err.name, err.message);
+        // If NotAllowedError, schedule a retry after a short delay
+        if (err.name === 'NotAllowedError') {
+          setTimeout(() => {
+            if (el.paused) el.play().catch(() => {});
+          }, 500);
+        }
+      });
     }
-  }, [remoteStream]);
+  }, [remoteStream, currentStage]);
 
   const updateProfile = async (profileData) => {
     try {
@@ -622,6 +781,7 @@ function App() {
     setIsMyTurnToSpeak(false);
     setRemoteStream(null);
     setLocalStream(null);
+    setPartnerImage(null);
     setCurrentStage(1);
   };
 
@@ -630,6 +790,13 @@ function App() {
     const secs = seconds % 60;
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
+
+  // Sync remote volume to the audio element
+  useEffect(() => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.volume = remoteVolume;
+    }
+  }, [remoteVolume]);
 
   // ============ RENDER METHODS ============
 
@@ -687,7 +854,13 @@ function App() {
     <div className="case-three">
       <div className="preparation-container">
         <div className="match-info">
-          <div className="match-anonymous-avatar">?</div>
+          <div className="match-anonymous-avatar">
+            {partnerImage ? (
+              <img src={`${API_BASE_URL}${partnerImage}`} alt={partnerUsername} className="partner-profile-pic" />
+            ) : (
+              '?'
+            )}
+          </div>
           <h2>Match Found!</h2>
           <p className="partner-info-text">
             You've been matched with <strong>{partnerUsername}</strong>, Age {partnerAge}
@@ -756,6 +929,16 @@ function App() {
             {isMyTurnToSpeak && <p className="speaking-hint">You are unmuted - speak now</p>}
             {!isMyTurnToSpeak && <p className="muted-hint">You are muted - listen to your partner</p>}
           </div>
+          {/* Volume slider for partner audio */}
+          <div className="volume-slider-wrapper">
+            <label className="volume-slider-label">🔊 Volume</label>
+            <input type="range" min="0" max="1" step="0.05" value={remoteVolume}
+              onChange={(e) => setRemoteVolume(parseFloat(e.target.value))} className="volume-slider" />
+          </div>
+          {/* Hang up button - icon only */}
+          <div className="audio-hangup-wrapper">
+            <button className="hangup-button" onClick={handleReturnToLobby} title="End call">📞</button>
+          </div>
         </div>
         <audio ref={localAudioRef} autoPlay muted />
         <audio ref={remoteVideoRef} autoPlay />
@@ -771,6 +954,21 @@ function App() {
     return (
       <div className="case-five">
         <div className="video-chat-stage">
+
+          {/* ── Countdown timer — top center of screen ── */}
+          <div className="video-timer-top">
+            <svg width="56" height="56">
+              <circle cx="28" cy="28" r="23" fill="none" stroke="rgba(0,212,255,0.15)" strokeWidth="3" />
+              <circle
+                cx="28" cy="28" r="23" fill="none" stroke="#ffd93d" strokeWidth="3"
+                strokeDasharray={`${2 * Math.PI * 23}`}
+                strokeDashoffset={`${2 * Math.PI * 23 * (1 - videoCallTimeLeft / threeMinutes)}`}
+                transform="rotate(-90 28 28)"
+                style={{ transition: 'stroke-dashoffset 1s linear' }}
+              />
+            </svg>
+            <div className="video-timer-text">{formatTime(videoCallTimeLeft)}</div>
+          </div>
 
           {/* ── Full-screen video grid ── */}
           <div className="video-grid">
@@ -799,21 +997,6 @@ function App() {
 
             {!isVideoPanelMinimized && (
               <>
-                {/* Countdown timer */}
-                <div className="video-timer">
-                  <svg width="56" height="56">
-                    <circle cx="28" cy="28" r="23" fill="none" stroke="rgba(0,212,255,0.15)" strokeWidth="3" />
-                    <circle
-                      cx="28" cy="28" r="23" fill="none" stroke="#ffd93d" strokeWidth="3"
-                      strokeDasharray={`${2 * Math.PI * 23}`}
-                      strokeDashoffset={`${2 * Math.PI * 23 * (1 - videoCallTimeLeft / threeMinutes)}`}
-                      transform="rotate(-90 28 28)"
-                      style={{ transition: 'stroke-dashoffset 1s linear' }}
-                    />
-                  </svg>
-                  <div className="video-timer-text">{formatTime(videoCallTimeLeft)}</div>
-                </div>
-
                 <div className="video-panel-divider" />
 
                 {/* Mic + Camera buttons */}
@@ -858,6 +1041,11 @@ function App() {
                 <p className="video-hint">
                   {filtersPhase ? 'Filters on' : 'Filters off'}
                 </p>
+
+                <div className="video-panel-divider" />
+
+                {/* Hang up - icon only */}
+                <button className="control-btn end-call" onClick={handleReturnToLobby} title="End call">📞</button>
               </>
             )}
           </div>

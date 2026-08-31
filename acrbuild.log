@@ -1,7 +1,0 @@
-﻿az : WARNING: Packing source code into tar to upload...
-    + CategoryInfo          : NotSpecified: (WARNING: Packin...ar to upload...:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
-WARNING: Excluding '.gitignore' based on default ignore rules
-WARNING: Uploading archived source code from 'C:\Users\maoro\AppData\Local\Temp\build_archive_b6334dce1de043f8ab7b07318
-f0bdbb5.tar.gz'...

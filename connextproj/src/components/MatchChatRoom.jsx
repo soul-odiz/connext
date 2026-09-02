@@ -3,6 +3,8 @@ import axios from 'axios';
 import { UserContext } from './UserContext';
 import API_BASE_URL from '../config';
 import Avatar from './Avatar';
+import PartnerProfileModal from './PartnerProfileModal';
+import ReportModal from './ReportModal';
 
 // Helper: clear all auth state on token expiry / invalidity
 const clearAuthState = (setToken, setCurrentUser) => {
@@ -28,6 +30,8 @@ const MatchChatRoom = ({ currentUser, match, socket, onClose, onStartVideoCall, 
   const [newMessage, setNewMessage] = useState('');
   const [incomingCall, setIncomingCall] = useState(null); // { type: 'video'|'phone', from: username }
   const [callPending, setCallPending] = useState(false);  // waiting for partner to accept
+  const [viewingProfile, setViewingProfile] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
   const messagesEndRef = useRef(null);
 
   // ── Load history ──────────────────────────────────────────────────────────
@@ -176,6 +180,26 @@ const MatchChatRoom = ({ currentUser, match, socket, onClose, onStartVideoCall, 
     setIncomingCall(null);
   };
 
+  // ── Unmatch handler ──────────────────────────────────────────────────────────
+  const handleMatchUnmatch = async () => {
+    const authToken = ctxToken || localStorage.getItem('token');
+    if (!authToken) return;
+
+    try {
+      await axios.post(
+        `${API_BASE_URL}/remove_match`,
+        {
+          session_id: match.session_id,
+          partner_id: match.partner_id,
+        },
+        { headers: { Authorization: `Bearer ${authToken}` } }
+      );
+      onClose(); // close the chat room after unmatching
+    } catch (err) {
+      console.error('Error unmatching:', err);
+    }
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="match-chatroom-overlay">
@@ -195,7 +219,14 @@ const MatchChatRoom = ({ currentUser, match, socket, onClose, onStartVideoCall, 
               />
             </div>
             <div>
-              <h3 className="match-chatroom-name">{match.partner_username}</h3>
+              <h3
+              className="match-chatroom-name"
+              onClick={() => setViewingProfile(true)}
+              style={{ cursor: 'pointer' }}
+              title="View profile"
+            >
+              {match.partner_username}
+            </h3>
               <p className="match-chatroom-sub">Private match chat</p>
             </div>
           </div>
@@ -215,6 +246,13 @@ const MatchChatRoom = ({ currentUser, match, socket, onClose, onStartVideoCall, 
               title="Request video call"
             >
               📹
+            </button>
+            <button
+              onClick={() => setShowReportModal(true)}
+              style={{background:"rgba(255,60,60,0.15)",border:"1px solid rgba(255,60,60,0.3)",color:"#ff6b6b",borderRadius:"6px",padding:"4px 8px",fontSize:"11px",cursor:"pointer",fontWeight:600,display:"flex",alignItems:"center",gap:"3px"}}
+              title="Report this user"
+            >
+              🚩
             </button>
           </div>
         </div>
@@ -287,6 +325,27 @@ const MatchChatRoom = ({ currentUser, match, socket, onClose, onStartVideoCall, 
           </button>
         </div>
       </div>
+
+      {/* Partner profile modal — shown when clicking the partner's name */}
+      {viewingProfile && (
+        <PartnerProfileModal
+          partnerId={match.partner_id}
+          partnerUsername={match.partner_username}
+          sessionId={match.session_id}
+          onClose={() => setViewingProfile(false)}
+          onUnmatch={handleMatchUnmatch}
+        />
+      )}
+
+      {/* Report Modal */}
+      {showReportModal && (
+        <ReportModal
+          partnerId={match.partner_id}
+          partnerUsername={match.partner_username}
+          token={ctxToken || localStorage.getItem('token')}
+          onClose={() => setShowReportModal(false)}
+        />
+      )}
     </div>
   );
 };

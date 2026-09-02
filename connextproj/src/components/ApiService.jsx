@@ -5,8 +5,8 @@ const apiClient = axios.create({
   baseURL: API_BASE_URL
 });
 
-const login = async (username, password) => {
-  return apiClient.post('/login', { username, password });
+const login = async (email, password) => {
+  return apiClient.post('/login', { email, password });
 };
 
 // Verify a Firebase ID token on the backend and get our app JWT + user.

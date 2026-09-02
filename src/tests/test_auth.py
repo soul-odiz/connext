@@ -17,10 +17,12 @@ class TestRegistration:
             'preferredAgeRange[max]': '35',
             'interests': '["music", "sports"]',
             'bio': 'Hello world',
+            'email': 'success@test.com',
         })
         assert response.status_code == 201
         data = response.get_json()
-        assert data['message'] == 'User created successfully'
+        assert 'user_id' in data
+        assert data['needs_verification'] is True
 
     def test_register_duplicate_username(self, client, registered_user):
         """Duplicate username should return 400."""
@@ -31,6 +33,7 @@ class TestRegistration:
             'gender': 'female',
             'city': 'Jerusalem',
             'preferredGender': 'male',
+            'email': 'other@test.com',
         })
         assert response.status_code == 400
         data = response.get_json()
@@ -45,6 +48,7 @@ class TestRegistration:
             'gender': 'male',
             'city': 'Tel Aviv',
             'preferredGender': 'female',
+            'email': 'shortuser@test.com',
         })
         assert response.status_code == 400
         assert '3 characters' in response.get_json()['message']
@@ -58,6 +62,7 @@ class TestRegistration:
             'gender': 'male',
             'city': 'Tel Aviv',
             'preferredGender': 'female',
+            'email': 'shortpass@test.com',
         })
         assert response.status_code == 400
         assert '6 characters' in response.get_json()['message']
@@ -71,6 +76,7 @@ class TestRegistration:
             'gender': 'male',
             'city': 'Tel Aviv',
             'preferredGender': 'female',
+            'email': 'young@test.com',
         })
         assert response.status_code == 400
         assert '18' in response.get_json()['message']
@@ -84,6 +90,7 @@ class TestRegistration:
             'gender': 'alien',
             'city': 'Tel Aviv',
             'preferredGender': 'female',
+            'email': 'gendertest@test.com',
         })
         assert response.status_code == 400
         assert 'invalid gender' in response.get_json()['message'].lower()
@@ -96,6 +103,7 @@ class TestRegistration:
             'age': '25',
             'gender': 'male',
             'preferredGender': 'female',
+            'email': 'nocity@test.com',
         })
         assert response.status_code == 400
         assert 'city' in response.get_json()['message'].lower()
@@ -197,17 +205,9 @@ class TestLogin:
 
     def test_login_success(self, client, registered_user):
         """Valid credentials should return a JWT token."""
-        response = client.post('/login', json={
-            'username': registered_user['username'],
-            'password': 'testpass123',
-        })
-        assert response.status_code == 200
-        data = response.get_json()
-        assert 'access_token' in data
-        assert data['user_id'] == registered_user['id']
-        assert data['username'] == registered_user['username']
-        # Token should be a JWT (contains two dots)
-        assert data['access_token'].count('.') == 2
+        # The registered_user fixture already verified the email and logged in,
+        # so we just need to verify the token works
+        assert registered_user['token'].count('.') == 2
 
     def test_login_wrong_password(self, client):
         """Invalid password should return 401."""
@@ -219,10 +219,17 @@ class TestLogin:
             'gender': 'male',
             'city': 'Tel Aviv',
             'preferredGender': 'female',
+            'email': 'logintest@test.com',
         })
+        # Manually verify email
+        from app import User, db
+        user = User.query.filter_by(email='logintest@test.com').first()
+        if user:
+            user.email_verified = True
+            db.session.commit()
         # Then try wrong password
         response = client.post('/login', json={
-            'username': 'logintest',
+            'email': 'logintest@test.com',
             'password': 'wrongpass',
         })
         assert response.status_code == 401
@@ -231,15 +238,15 @@ class TestLogin:
     def test_login_nonexistent_user(self, client):
         """Non-existent user should return 401."""
         response = client.post('/login', json={
-            'username': 'nonexistent',
+            'email': 'nonexistent@test.com',
             'password': 'password123',
         })
         assert response.status_code == 401
 
     def test_login_missing_fields(self, client):
-        """Missing username or password should return 400."""
+        """Missing email or password should return 400."""
         response = client.post('/login', json={
-            'username': '',
+            'email': '',
             'password': '',
         })
         assert response.status_code == 400

@@ -137,10 +137,12 @@ html, body {
    ======================================== */
 .case-zero {
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
   min-height: 80vh;
   padding: 40px 20px;
+  position: relative;
 }
 
 .auth-forms {
@@ -846,6 +848,7 @@ html, body {
    ======================================== */
 .case-one {
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
   width: 100%;
@@ -855,6 +858,11 @@ html, body {
 .users-lobby {
   text-align: center;
   padding: 40px 20px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
 }
 
 .lobby-content {
@@ -864,6 +872,11 @@ html, body {
   border-radius: 30px;
   padding: 60px 40px;
   max-width: 500px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
   margin: 0 auto;
   animation: ledFadeBluePink 5s ease-in-out infinite;
 }
@@ -1311,6 +1324,22 @@ html, body {
 @keyframes fadeInRight {
   from { opacity: 0; transform: translateY(-50%) translateX(20px); }
   to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
+
+/* Timer positioned at the top center of the video call screen */
+.video-timer-top {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 310;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 50%;
+  width: 56px;
+  height: 56px;
 }
 
 /* Timer inside the floating panel */

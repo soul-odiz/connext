@@ -4,11 +4,12 @@ import { UserContext } from './UserContext';
 import API_BASE_URL from '../config';
 import Avatar from './Avatar';
 
-const PartnerProfileModal = ({ partnerId, partnerUsername, onClose }) => {
+const PartnerProfileModal = ({ partnerId, partnerUsername, onClose, onUnmatch }) => {
   const { token: ctxToken } = useContext(UserContext);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [unmatching, setUnmatching] = useState(false);
 
   useEffect(() => {
     const authToken = ctxToken || localStorage.getItem('token');
@@ -86,6 +87,34 @@ const PartnerProfileModal = ({ partnerId, partnerUsername, onClose }) => {
                     <span key={i} className="partner-profile-chip">{interest}</span>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* Unmatch button */}
+            {onUnmatch && (
+              <div className="partner-profile-section" style={{ textAlign: 'center', marginTop: '16px' }}>
+                <button
+                  className="unmatch-btn"
+                  onClick={() => {
+                    setUnmatching(true);
+                    onUnmatch();
+                  }}
+                  disabled={unmatching}
+                  style={{
+                    background: 'rgba(255,60,60,0.15)',
+                    color: '#ff6b6b',
+                    border: '1px solid rgba(255,60,60,0.3)',
+                    borderRadius: '8px',
+                    padding: '8px 20px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                  }}
+                  onMouseEnter={(e) => e.target.style.background = 'rgba(255,60,60,0.25)'}
+                  onMouseLeave={(e) => e.target.style.background = 'rgba(255,60,60,0.15)'}
+                >
+                  {unmatching ? 'Unmatching...' : '💔 Unmatch'}
+                </button>
               </div>
             )}
           </>

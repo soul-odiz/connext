@@ -1,20 +1,21 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import axios from 'axios';
 import closeButtonImage from '../close.jpg';
 import SocialAuth from './SocialAuth';
 import API_BASE_URL from '../config';
+import TermsModal from './TermsModal';
 const GENDERS = ['Male', 'Female', 'Other'];
 const INTEREST_CATEGORIES = [
-  { label: 'נ® Gaming & Tech', items: ['Gaming', 'PC Gaming', 'Console Gaming', 'Mobile Gaming', 'VR / AR', 'Coding', 'AI & Tech', 'Gadgets', 'Cybersecurity', 'Crypto / Web3'] },
-  { label: 'נ¬ Entertainment', items: ['Movies', 'TV Series', 'Anime', 'Documentaries', 'Stand-up Comedy', 'Podcasts', 'YouTube', 'Streaming', 'Theater', 'Board Games'] },
-  { label: 'נµ Music', items: ['Pop', 'Rock', 'Hip-Hop', 'Electronic / EDM', 'Jazz', 'Classical', 'R&B', 'Metal', 'Indie', 'Playing Instruments'] },
-  { label: 'נƒ Sports & Fitness', items: ['Gym / Weightlifting', 'Running', 'Cycling', 'Swimming', 'Football / Soccer', 'Basketball', 'Tennis', 'Martial Arts', 'Yoga', 'Hiking'] },
-  { label: 'נ¿ Outdoors & Nature', items: ['Hiking', 'Camping', 'Rock Climbing', 'Surfing', 'Skiing / Snowboarding', 'Fishing', 'Gardening', 'Bird Watching', 'Astronomy', 'Backpacking'] },
-  { label: 'נ• Food & Drink', items: ['Cooking', 'Baking', 'Coffee', 'Wine', 'Craft Beer', 'Sushi', 'Vegan / Plant-based', 'Street Food', 'Fine Dining', 'Meal Prep'] },
-  { label: 'גˆן¸ Travel & Culture', items: ['Travelling', 'Backpacking', 'Road Trips', 'Languages', 'History', 'Museums', 'Photography', 'Architecture', 'Volunteering', 'Festivals'] },
-  { label: 'נ“ Learning & Creativity', items: ['Reading', 'Writing', 'Drawing / Illustration', 'Painting', 'Sculpting', 'Photography', 'Filmmaking', 'Design', 'Fashion', 'DIY / Crafts'] },
-  { label: 'נ§˜ Wellness & Lifestyle', items: ['Meditation', 'Mindfulness', 'Journaling', 'Astrology', 'Spirituality', 'Self-improvement', 'Minimalism', 'Sustainability', 'Mental Health', 'Nutrition'] },
-  { label: 'נ¾ Animals & Pets', items: ['Dogs', 'Cats', 'Horses', 'Reptiles', 'Birds', 'Marine Life', 'Wildlife', 'Animal Rescue', 'Veganism', 'Zoo / Aquarium'] },
+  { label: '🎮 Gaming & Tech', items: ['Gaming', 'PC Gaming', 'Console Gaming', 'Mobile Gaming', 'VR / AR', 'Coding', 'AI & Tech', 'Gadgets', 'Cybersecurity', 'Crypto / Web3'] },
+  { label: '🎬 Entertainment', items: ['Movies', 'TV Series', 'Anime', 'Documentaries', 'Stand-up Comedy', 'Podcasts', 'YouTube', 'Streaming', 'Theater', 'Board Games'] },
+  { label: '🎵 Music', items: ['Pop', 'Rock', 'Hip-Hop', 'Electronic / EDM', 'Jazz', 'Classical', 'R&B', 'Metal', 'Indie', 'Playing Instruments'] },
+  { label: '🏃 Sports & Fitness', items: ['Gym / Weightlifting', 'Running', 'Cycling', 'Swimming', 'Football / Soccer', 'Basketball', 'Tennis', 'Martial Arts', 'Yoga', 'Hiking'] },
+  { label: '🌿 Outdoors & Nature', items: ['Hiking', 'Camping', 'Rock Climbing', 'Surfing', 'Skiing / Snowboarding', 'Fishing', 'Gardening', 'Bird Watching', 'Astronomy', 'Backpacking'] },
+  { label: '🍕 Food & Drink', items: ['Cooking', 'Baking', 'Coffee', 'Wine', 'Craft Beer', 'Sushi', 'Vegan / Plant-based', 'Street Food', 'Fine Dining', 'Meal Prep'] },
+  { label: '✈️ Travel & Culture', items: ['Travelling', 'Backpacking', 'Road Trips', 'Languages', 'History', 'Museums', 'Photography', 'Architecture', 'Volunteering', 'Festivals'] },
+  { label: '📚 Learning & Creativity', items: ['Reading', 'Writing', 'Drawing / Illustration', 'Painting', 'Sculpting', 'Photography', 'Filmmaking', 'Design', 'Fashion', 'DIY / Crafts'] },
+  { label: '🧘 Wellness & Lifestyle', items: ['Meditation', 'Mindfulness', 'Journaling', 'Astrology', 'Spirituality', 'Self-improvement', 'Minimalism', 'Sustainability', 'Mental Health', 'Nutrition'] },
+  { label: '🐾 Animals & Pets', items: ['Dogs', 'Cats', 'Horses', 'Reptiles', 'Birds', 'Marine Life', 'Wildlife', 'Animal Rescue', 'Veganism', 'Zoo / Aquarium'] },
 ];
 
 function SignUp() {
@@ -37,6 +38,11 @@ function SignUp() {
   const [showSignUpForm, setShowSignUpForm] = useState(false);
   const [showVerifyNotice, setShowVerifyNotice] = useState(false);
   const [resendMessage, setResendMessage] = useState('');
+  const [verificationStep, setVerificationStep] = useState(''); // '' | 'show' | 'sent' | 'verified'
+  const [verifyCode, setVerifyCode] = useState('');
+  const [verificationEmail, setVerificationEmail] = useState('');
+  const [registeredUserId, setRegisteredUserId] = useState(null);
+  const [showTerms, setShowTerms] = useState(false);
 
   const handleChange = (e) => {
     const { name, value, type, checked, files } = e.target;
@@ -128,9 +134,37 @@ function SignUp() {
 
       const response = await axios.post(`${API_BASE_URL}/register`, formDataToSend);
       setSuccessMessage(response.data.message);
-      setTimeout(() => {
-        setShowSignUpForm(false);
-      }, 1500);
+
+      // If the user registered with email, show the verification code step
+      if (response.data.needs_verification) {
+        setVerificationEmail(formData.email);
+        setRegisteredUserId(response.data.user_id);
+        setVerificationStep('sent');
+
+        // If a dev_code was returned (no SMTP configured), auto-fill it
+        if (response.data.dev_code) {
+          setVerifyCode(response.data.dev_code);
+          // Auto-verify immediately
+          try {
+            const verifyRes = await axios.post(`${API_BASE_URL}/verify_email`, {
+              email: formData.email,
+              code: response.data.dev_code,
+            });
+            if (verifyRes.data.access_token) {
+              localStorage.setItem('token', verifyRes.data.access_token);
+              localStorage.setItem('currentUser', JSON.stringify(verifyRes.data.user));
+              setVerificationStep('verified');
+              setTimeout(() => { setShowSignUpForm(false); }, 1000);
+            }
+          } catch (e) {
+            console.error('Auto-verify failed:', e);
+          }
+        }
+      } else {
+        setTimeout(() => {
+          setShowSignUpForm(false);
+        }, 1500);
+      }
     } catch (error) {
       if (error.response && error.response.data) {
         setErrorMessage(error.response.data.message);
@@ -393,8 +427,8 @@ function SignUp() {
             {errorMessage && <div className="error-message">{errorMessage}</div>}
             {successMessage && <div className="success-message">{successMessage}</div>}
 
-            {/* Register Button */}
-            <button className='btn-2' onClick={() => register(true)} disabled={loading}>{loading ? 'Registering...' : 'Register'}
+            {/* Register Button — first shows Terms of Use */}
+            <button className='btn-2' onClick={() => { if (isFormValid()) setShowTerms(true); else setErrorMessage('Please fill in all required fields.'); }} disabled={loading}>{loading ? 'Registering...' : 'Register'}
               <span></span>
               <span></span>
               <span></span>
@@ -405,6 +439,114 @@ function SignUp() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Verification code screen — shown after registration with email */}
+      {verificationStep === 'sent' && (
+        <div className="signin-page">
+          <h2 style={{ marginBottom: '15px' }}>📧 Verify Your Email</h2>
+          <p style={{ color: 'rgba(255,255,255,0.6)', marginBottom: '20px', fontSize: '14px' }}>
+            A 5-digit verification code was sent to <strong>{verificationEmail}</strong>
+          </p>
+          <div className='user-box'>
+            <input
+              type="text"
+              value={verifyCode}
+              onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 5))}
+              placeholder="Enter 5-digit code"
+              maxLength={5}
+              style={{ textAlign: 'center', fontSize: '24px', letterSpacing: '8px' }}
+            />
+            <label>Verification Code</label>
+          </div>
+          {errorMessage && <div className="error-message">{errorMessage}</div>}
+          {resendMessage && <div className="success-message">{resendMessage}</div>}
+          <div className='signin-container-button'>
+            <button
+              className='btn-1'
+              onClick={async () => {
+                if (!verifyCode || verifyCode.length !== 5) {
+                  setErrorMessage('Please enter the 5-digit code');
+                  return;
+                }
+                setErrorMessage('');
+                setLoading(true);
+                try {
+                  const verifyRes = await axios.post(`${API_BASE_URL}/verify_email`, {
+                    email: verificationEmail,
+                    code: verifyCode,
+                  });
+                  if (verifyRes.data.access_token) {
+                    localStorage.setItem('token', verifyRes.data.access_token);
+                    localStorage.setItem('currentUser', JSON.stringify(verifyRes.data.user));
+                    setVerificationStep('verified');
+                    setSuccessMessage('Email verified! You are now signed in.');
+                    setTimeout(() => { setShowSignUpForm(false); }, 1500);
+                  }
+                } catch (err) {
+                  setErrorMessage(err.response?.data?.message || 'Verification failed');
+                } finally {
+                  setLoading(false);
+                }
+              }}
+              disabled={loading}
+            >
+              {loading ? 'Verifying...' : 'Verify Email'}
+            </button>
+          </div>
+          <button
+            type="button"
+            className="link-button"
+            style={{ marginTop: '12px', fontSize: '13px' }}
+            onClick={async () => {
+              setResendMessage('');
+              setErrorMessage('');
+              try {
+                const res = await axios.post(`${API_BASE_URL}/send_verification_code`, {
+                  email: verificationEmail,
+                  user_id: registeredUserId,
+                });
+                if (res.data.dev_code) {
+                  setVerifyCode(res.data.dev_code);
+                  // Auto-verify
+                  const verifyRes = await axios.post(`${API_BASE_URL}/verify_email`, {
+                    email: verificationEmail,
+                    code: res.data.dev_code,
+                  });
+                  if (verifyRes.data.access_token) {
+                    localStorage.setItem('token', verifyRes.data.access_token);
+                    localStorage.setItem('currentUser', JSON.stringify(verifyRes.data.user));
+                    setVerificationStep('verified');
+                    setSuccessMessage('Email verified! You are now signed in.');
+                    setTimeout(() => { setShowSignUpForm(false); }, 1500);
+                  }
+                } else {
+                  setResendMessage('Code resent! Check your email.');
+                }
+              } catch (err) {
+                setResendMessage('Could not resend. Please try again.');
+              }
+            }}
+          >
+            Resend code
+          </button>
+        </div>
+      )}
+
+      {/* Verified success */}
+      {verificationStep === 'verified' && (
+        <div className="signin-page">
+          <h2 style={{ marginBottom: '15px' }}>✅ Email Verified!</h2>
+          <p style={{ color: 'rgba(255,255,255,0.6)' }}>You are now signed in. Redirecting...</p>
+        </div>
+      )}
+
+      {/* Terms of Use modal — shown when registering */}
+      {showTerms && (
+        <TermsModal
+          onAccept={() => { setShowTerms(false); register(true); }}
+          onDecline={() => { setShowTerms(false); setErrorMessage('You must accept the Terms of Use to create an account.'); }}
+        />
       )}
     </div>
   );

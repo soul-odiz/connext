@@ -10,7 +10,7 @@ const MatchesPage = ({ currentUser, token: propToken, socket, onClose, onOpenCha
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [viewingProfile, setViewingProfile] = useState(null); // { partner_id, partner_username }
+  const [viewingProfile, setViewingProfile] = useState(null); // { partner_id, partner_username, session_id }
 
   useEffect(() => {
     const authToken = propToken || contextToken || localStorage.getItem('token');
@@ -48,6 +48,43 @@ const MatchesPage = ({ currentUser, token: propToken, socket, onClose, onOpenCha
     loadMatches();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propToken, contextToken, setToken, setCurrentUser]);
+
+  // ── Unmatch handler ─────────────────────────────────────────────────────────
+  const handleUnmatch = async () => {
+    if (!viewingProfile) return;
+
+    const authToken = propToken || contextToken || localStorage.getItem('token');
+    if (!authToken) return;
+
+    try {
+      await axios.post(
+        `${API_BASE_URL}/remove_match`,
+        {
+          session_id: viewingProfile.session_id,
+          partner_id: viewingProfile.partner_id,
+        },
+        { headers: { Authorization: `Bearer ${authToken}` } }
+      );
+
+      // Remove from local list
+      setMatches((prev) =>
+        prev.filter((m) => m.session_id !== viewingProfile.session_id)
+      );
+      setViewingProfile(null);
+    } catch (err) {
+      console.error('Error unmatching:', err);
+      // Re-enable the button by resetting — the modal needs to know to re-show the button
+      // We force-close and reopen by briefly nulling then restoring
+      setViewingProfile(null);
+      setTimeout(() => {
+        setViewingProfile({
+          partner_id: viewingProfile.partner_id,
+          partner_username: viewingProfile.partner_username,
+          session_id: viewingProfile.session_id,
+        });
+      }, 50);
+    }
+  };
 
   return (
     <>
@@ -106,7 +143,7 @@ const MatchesPage = ({ currentUser, token: propToken, socket, onClose, onOpenCha
                   <div className="match-card-actions">
                     <button
                       className="match-card-profile-btn"
-                      onClick={() => setViewingProfile({ partner_id: match.partner_id, partner_username: match.partner_username })}
+                      onClick={() => setViewingProfile({ partner_id: match.partner_id, partner_username: match.partner_username, session_id: match.session_id })}
                       title="View profile"
                     >
                       👤
@@ -131,7 +168,9 @@ const MatchesPage = ({ currentUser, token: propToken, socket, onClose, onOpenCha
         <PartnerProfileModal
           partnerId={viewingProfile.partner_id}
           partnerUsername={viewingProfile.partner_username}
+          sessionId={viewingProfile.session_id}
           onClose={() => setViewingProfile(null)}
+          onUnmatch={handleUnmatch}
         />
       )}
     </>

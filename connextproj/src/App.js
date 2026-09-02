@@ -13,6 +13,8 @@ import FaceFilter from './components/FaceFilter';
 import { FILTERS, FILTER_IDS, DEFAULT_FILTER } from './components/FaceFiltersRegistry';
 import MatchesPage from './components/MatchesPage';
 import MatchChatRoom from './components/MatchChatRoom';
+import ContactUs from './components/ContactUs';
+import ReportModal from './components/ReportModal';
 import API_BASE_URL from './config';
 
 // ICE server config: Google STUN + optional TURN from env vars
@@ -97,6 +99,8 @@ function App() {
 
   // Matches page & chat room state
   const [showMatchesPage, setShowMatchesPage] = useState(false);
+  const [showContactUs, setShowContactUs] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
   const [activeChatMatch, setActiveChatMatch] = useState(null); // the match object currently open in chat
   // Match room call state (video/phone call initiated from match chat room)
   const [matchRoomCallType, setMatchRoomCallType] = useState(null); // 'video' | 'phone'
@@ -802,9 +806,17 @@ function App() {
 
   const renderAuthScreen = () => (
     <div className="case-zero">
-      <div className="auth-forms">
+      <div className="auth-forms" style={{ flex: '1', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
         <SignIn />
         <SignUp />
+      </div>
+      <div style={{ paddingBottom: '20px', textAlign: 'center' }}>
+        <button
+          onClick={() => setShowContactUs(true)}
+          style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', fontSize: '13px', cursor: 'pointer', textDecoration: 'underline' }}
+        >
+          Contact Us
+        </button>
       </div>
     </div>
   );
@@ -829,6 +841,14 @@ function App() {
             💕 My Matches
           </button>
           <p className="lobby-hint">You'll be matched anonymously based on your preferences</p>
+        </div>
+        <div style={{ paddingBottom: '20px', textAlign: 'center' }}>
+          <button
+            onClick={() => setShowContactUs(true)}
+            style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', fontSize: '13px', cursor: 'pointer', textDecoration: 'underline' }}
+          >
+            Contact Us
+          </button>
         </div>
       </div>
     </div>
@@ -939,6 +959,8 @@ function App() {
           <div className="audio-hangup-wrapper">
             <button className="hangup-button" onClick={handleReturnToLobby} title="End call"><span className="hangup-icon">📞</span></button>
           </div>
+          {/* Report button */}
+          <button onClick={() => setShowReportModal(true)} style={{position:"absolute",bottom:"16px",right:"16px",background:"rgba(255,60,60,0.2)",border:"1px solid rgba(255,60,60,0.4)",color:"#ff6b6b",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",cursor:"pointer",zIndex:400,fontWeight:600,display:"flex",alignItems:"center",gap:"4px"}} title="Report this user">🚩 Report</button>
         </div>
         <audio ref={localAudioRef} autoPlay muted />
         <audio ref={remoteVideoRef} autoPlay />
@@ -1048,6 +1070,8 @@ function App() {
                 <button className="control-btn end-call" onClick={handleReturnToLobby} title="End call">📞</button>
               </>
             )}
+            {/* Report button */}
+            <button onClick={() => setShowReportModal(true)} style={{position:"absolute",bottom:"16px",right:"16px",background:"rgba(255,60,60,0.2)",border:"1px solid rgba(255,60,60,0.4)",color:"#ff6b6b",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",cursor:"pointer",zIndex:400,fontWeight:600,display:"flex",alignItems:"center",gap:"4px"}} title="Report this user">🚩 Report</button>
           </div>
 
         </div>
@@ -1101,6 +1125,9 @@ function App() {
             Back to Lobby
           </button>
         </div>
+
+        {/* Report button */}
+        <button onClick={() => setShowReportModal(true)} style={{position:"absolute",bottom:"16px",right:"16px",background:"rgba(255,60,60,0.2)",border:"1px solid rgba(255,60,60,0.4)",color:"#ff6b6b",borderRadius:"8px",padding:"6px 12px",fontSize:"12px",cursor:"pointer",zIndex:400,fontWeight:600,display:"flex",alignItems:"center",gap:"4px"}} title="Report this user">🚩 Report</button>
 
         {showSetDateScreen && (
           <div className="date-overlay">
@@ -1232,12 +1259,36 @@ function App() {
           </div>
         ) : (
           <div className="case-zero">
-            <div className="auth-forms">
+            <div className="auth-forms" style={{ flex: '1', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
               <SignIn />
               <SignUp />
             </div>
+            <div style={{ paddingBottom: '20px', textAlign: 'center' }}>
+              <button
+                onClick={() => setShowContactUs(true)}
+                style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', fontSize: '13px', cursor: 'pointer', textDecoration: 'underline' }}
+              >
+                Contact Us
+              </button>
+            </div>
           </div>
         )}
+
+        {/* Contact Us modal — rendered outside the condition so it works on both auth and lobby */}
+        {showContactUs && (
+          <ContactUs onClose={() => setShowContactUs(false)} />
+        )}
+
+        {/* Report Modal */}
+        {showReportModal && (
+          <ReportModal
+            partnerId={partnerId}
+            partnerUsername={partnerUsername}
+            token={token || localStorage.getItem('token')}
+            onClose={() => setShowReportModal(false)}
+          />
+        )}
+
       </div>
     </div>
   );

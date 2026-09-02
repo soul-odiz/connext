@@ -162,6 +162,32 @@ def create_app():
     cors_origins = [o.strip() for o in cors_origins_str.split(',') if o.strip()]
     CORS(app, resources={r"/*": {"origins": cors_origins}}, supports_credentials=True)
 
+    # ── Handle CORS preflight (OPTIONS) before JWT or any decorator ────
+    @app.before_request
+    def handle_preflight():
+        if request.method == 'OPTIONS':
+            # Return a 200 so the browser preflight succeeds
+            response = app.make_default_options_response()
+            origin = request.headers.get('Origin')
+            if origin in cors_origins:
+                response.headers['Access-Control-Allow-Origin'] = origin
+            else:
+                response.headers['Access-Control-Allow-Origin'] = cors_origins[0] if cors_origins else '*'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            return response
+
+    @app.after_request
+    def add_cors_headers(response):
+        origin = request.headers.get('Origin')
+        if origin:
+            response.headers['Access-Control-Allow-Origin'] = origin if origin in cors_origins else (cors_origins[0] if cors_origins else '*')
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+
     # ── Proxy Fix (for running behind nginx/reverse proxy) ──────────────
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
@@ -259,6 +285,8 @@ class User(db.Model):
     email = db.Column(db.String(255), unique=True, index=True, nullable=True)
     auth_provider = db.Column(db.String(20), default='local', nullable=False, server_default='local')
     email_verified = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
+    verification_code = db.Column(db.String(6), nullable=True)
+    verification_code_expires = db.Column(db.DateTime, nullable=True)
     firebase_uid = db.Column(db.String(128), unique=True, index=True, nullable=True)
     is_in_queue = db.Column(db.Boolean, default=False, index=True)
     current_session_id = db.Column(db.String(50), nullable=True)
@@ -367,6 +395,20 @@ class MatchQueue(db.Model):
         return datetime.utcnow() - self.timestamp
 
 
+class BlockedUser(db.Model):
+    __tablename__ = 'blocked_user'
+
+    id = db.Column(db.Integer, primary_key=True)
+    reporter_id = db.Column(db.Integer, db.ForeignKey('user.id'), index=True, nullable=False)
+    blocked_id = db.Column(db.Integer, db.ForeignKey('user.id'), index=True, nullable=False)
+    reason = db.Column(db.String(50), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('reporter_id', 'blocked_id', name='uq_reporter_blocked'),
+    )
+
+
 # ============ DATABASE INIT ============
 
 def ensure_sqlite_schema_updates():
@@ -394,6 +436,8 @@ def ensure_sqlite_schema_updates():
                 ('auth_provider', "VARCHAR(20) DEFAULT 'local'"),
                 ('email_verified', 'BOOLEAN DEFAULT 0'),
                 ('firebase_uid', 'VARCHAR(128)'),
+                ('verification_code', 'VARCHAR(6)'),
+                ('verification_code_expires', 'TIMESTAMP'),
             ]:
                 if col not in existing_columns:
                     connection.execute(text(f'ALTER TABLE "user" ADD COLUMN {col} {ddl}'))
@@ -417,6 +461,8 @@ def ensure_sqlite_schema_updates():
                 ('auth_provider', "VARCHAR(20) NOT NULL DEFAULT 'local'"),
                 ('email_verified', 'BOOLEAN NOT NULL DEFAULT FALSE'),
                 ('firebase_uid', 'VARCHAR(128)'),
+                ('verification_code', 'VARCHAR(6)'),
+                ('verification_code_expires', 'TIMESTAMP'),
             ]:
                 if col not in existing_columns:
                     connection.execute(text(
@@ -505,6 +551,36 @@ def find_match_for_user(current_user):
         if potential.preferred_age_min and current_user.age < potential.preferred_age_min:
             continue
         if potential.preferred_age_max and current_user.age > potential.preferred_age_max:
+            continue
+
+        # Skip if already matched (any non-removed session exists between them)
+        existing_match = MatchSession.query.filter(
+            (
+                (MatchSession.user1_id == current_user.id) &
+                (MatchSession.user2_id == potential.id)
+            ) | (
+                (MatchSession.user1_id == potential.id) &
+                (MatchSession.user2_id == current_user.id)
+            ),
+            MatchSession.status != 'removed'
+        ).first()
+        if existing_match:
+            continue
+
+        # Skip if the current user has blocked this potential match
+        blocked = BlockedUser.query.filter_by(
+            reporter_id=current_user.id,
+            blocked_id=potential.id
+        ).first()
+        if blocked:
+            continue
+
+        # Skip if the potential match has blocked the current user
+        blocked_by = BlockedUser.query.filter_by(
+            reporter_id=potential.id,
+            blocked_id=current_user.id
+        ).first()
+        if blocked_by:
             continue
 
         # Calculate distance
@@ -647,8 +723,12 @@ def register():
         return jsonify({'message': 'Username must be at least 3 characters'}), 400
     if len(username) > 80:
         return jsonify({'message': 'Username must be 80 characters or less'}), 400
+    # Email is required for local auth
+    if auth_provider == 'local' and not email:
+        return jsonify({'message': 'Email is required for registration'}), 400
     # Password is optional for Firebase-linked accounts (they have no app password)
     if auth_provider == 'local' and (not password or len(password) < 6):
+        return jsonify({'message': 'Password must be at least 6 characters'}), 400
         return jsonify({'message': 'Password must be at least 6 characters'}), 400
     if email and not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
         return jsonify({'message': 'Invalid email address'}), 400
@@ -724,29 +804,166 @@ def register():
     )
     if auth_provider == 'local':
         new_user.set_password(password)
+    # Generate email verification code for local accounts
+    dev_code = None
+    if auth_provider == 'local' and email:
+        code = str(random.randint(10000, 99999))
+        new_user.verification_code = code
+        new_user.verification_code_expires = datetime.utcnow() + timedelta(minutes=10)
+        smtp_server = os.environ.get('SMTP_SERVER')
+        if smtp_server:
+            try:
+                import smtplib
+                from email.mime.text import MIMEText
+                msg = MIMEText(f'Your Connext verification code is: {code}\n\nThis code expires in 10 minutes.')
+                msg['Subject'] = 'Connext - Verify Your Email'
+                msg['From'] = os.environ.get('SMTP_FROM', 'noreply@connext.app')
+                msg['To'] = email
+                with smtplib.SMTP(smtp_server, int(os.environ.get('SMTP_PORT', 587))) as server:
+                    server.starttls()
+                    server.login(os.environ.get('SMTP_USER', ''), os.environ.get('SMTP_PASSWORD', ''))
+                    server.send_message(msg)
+            except Exception as e:
+                logger.error('Failed to send verification email on register', extra={'email': email, 'error': str(e)})
+        else:
+            dev_code = code  # Return code for dev/testing
     db.session.add(new_user)
     db.session.commit()
 
     logger.info('User registered', extra={'user_id': new_user.id, 'username': username})
-    return jsonify({'message': 'User created successfully'}), 201
+
+    response_data = {
+        'message': 'User created successfully',
+        'user_id': new_user.id,
+        'email': email,
+        'needs_verification': auth_provider == 'local' and bool(email),
+    }
+    if dev_code:
+        response_data['dev_code'] = dev_code
+    return jsonify(response_data), 201
+
+
+@app.route('/send_verification_code', methods=['POST'])
+@limiter.limit(os.environ.get('RATE_LIMIT_VERIFY', '5 per minute'))
+def send_verification_code():
+    """Generate and send a 5-digit verification code to the user's email."""
+    data = request.get_json(silent=True) or {}
+    email = data.get('email', '').strip().lower()
+    user_id = data.get('user_id')
+
+    if not email:
+        return jsonify({'message': 'Email is required'}), 400
+
+    user = None
+    if user_id:
+        user = db.session.get(User, int(user_id))
+    if not user:
+        user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+    if user.auth_provider != 'local':
+        return jsonify({'message': 'Social login accounts do not need email verification'}), 400
+
+    # Generate a random 5-digit code
+    code = str(random.randint(10000, 99999))
+    user.verification_code = code
+    user.verification_code_expires = datetime.utcnow() + timedelta(minutes=10)
+    db.session.commit()
+
+    # Try to send email via SMTP if configured, otherwise log to console
+    mail_sent = False
+    smtp_server = os.environ.get('SMTP_SERVER')
+    if smtp_server:
+        try:
+            import smtplib
+            from email.mime.text import MIMEText
+            msg = MIMEText(f'Your Connext verification code is: {code}\n\nThis code expires in 10 minutes.')
+            msg['Subject'] = 'Connext - Verify Your Email'
+            msg['From'] = os.environ.get('SMTP_FROM', 'noreply@connext.app')
+            msg['To'] = email
+            with smtplib.SMTP(smtp_server, int(os.environ.get('SMTP_PORT', 587))) as server:
+                server.starttls()
+                server.login(os.environ.get('SMTP_USER', ''), os.environ.get('SMTP_PASSWORD', ''))
+                server.send_message(msg)
+            mail_sent = True
+        except Exception as e:
+            logger.error('Failed to send verification email', extra={'email': email, 'error': str(e)})
+
+    logger.info('Verification code sent', extra={'email': email, 'code': code if not smtp_server else '***', 'mail_sent': mail_sent})
+
+    return jsonify({
+        'message': 'Verification code sent to your email',
+        'code_sent': mail_sent or not smtp_server,
+        # In development without SMTP, return the code so the UI can show it
+        'dev_code': code if not smtp_server else None,
+    }), 200
+
+
+@app.route('/verify_email', methods=['POST'])
+@limiter.limit(os.environ.get('RATE_LIMIT_VERIFY', '10 per minute'))
+def verify_email():
+    """Verify a user's email with a 5-digit code."""
+    data = request.get_json(silent=True) or {}
+    email = data.get('email', '').strip().lower()
+    code = data.get('code', '').strip()
+
+    if not email or not code:
+        return jsonify({'message': 'Email and code are required'}), 400
+    if len(code) != 5 or not code.isdigit():
+        return jsonify({'message': 'Code must be a 5-digit number'}), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+    if user.email_verified:
+        return jsonify({'message': 'Email already verified'}), 200
+
+    if not user.verification_code or not user.verification_code_expires:
+        return jsonify({'message': 'No verification code found. Request a new one.'}), 400
+
+    if datetime.utcnow() > user.verification_code_expires:
+        return jsonify({'message': 'Verification code has expired. Request a new one.'}), 400
+
+    if user.verification_code != code:
+        return jsonify({'message': 'Invalid verification code'}), 400
+
+    user.email_verified = True
+    user.verification_code = None
+    user.verification_code_expires = None
+    db.session.commit()
+
+    # Generate JWT for immediate login
+    access_token = create_access_token(identity=str(user.id))
+
+    logger.info('Email verified', extra={'user_id': user.id, 'email': email})
+
+    return jsonify({
+        'message': 'Email verified successfully',
+        'access_token': access_token,
+        'user_id': user.id,
+        'username': user.username,
+        'user': user.to_public_dict(),
+    }), 200
 
 
 @app.route('/login', methods=['POST'])
 @limiter.limit(os.environ.get('RATE_LIMIT_LOGIN', '20 per hour'))
 def login():
     data = request.get_json(silent=True) or {}
-    username = data.get('username', '').strip()
+    email = data.get('email', '').strip().lower()
     password = data.get('password', '')
 
-    if not username or not password:
-        return jsonify({'message': 'Username and password are required'}), 400
+    if not email or not password:
+        return jsonify({'message': 'Email and password are required'}), 400
 
-    user = User.query.filter_by(username=username).first()
+    user = User.query.filter_by(email=email).first()
     if user and user.check_password(password):
+        if user.auth_provider == 'local' and not user.email_verified:
+            return jsonify({'message': 'Please verify your email before logging in', 'email_not_verified': True}), 403
         access_token = create_access_token(identity=str(user.id))
         user.last_active = datetime.utcnow()
         db.session.commit()
-        logger.info('User logged in', extra={'user_id': user.id, 'username': username})
+        logger.info('User logged in', extra={'user_id': user.id, 'email': email})
         return jsonify(
             access_token=access_token,
             user_id=user.id,
@@ -754,7 +971,7 @@ def login():
             user=user.to_public_dict()
         ), 200
 
-    return jsonify({'message': 'Invalid username or password'}), 401
+    return jsonify({'message': 'Invalid email or password'}), 401
 
 
 @app.route('/oauth_login', methods=['POST'])
@@ -1290,6 +1507,10 @@ def handle_start_audio_call(data):
     if not match_session:
         return
 
+    # Idempotency guard: don't restart audio if already in this stage
+    if match_session.status == 'audio_call':
+        return
+
     match_session.status = 'audio_call'
     match_session.stage_started_at = datetime.utcnow()
 
@@ -1399,15 +1620,28 @@ def handle_date_set(data):
     """Notify partner that a date has been proposed and mark session completed."""
     session_id = data.get('session_id')
     partner_id = data.get('partner_id')
+    date_time = data.get('date_time')
+    location = data.get('location')
 
-    match_session = MatchSession.query.filter_by(session_id=session_id).first()
-    if match_session:
+    if match_session := MatchSession.query.filter_by(session_id=session_id).first():
         match_session.status = 'completed'
         db.session.commit()
 
+    # Format date/time for display
+    formatted_date = ''
+    if date_time:
+        try:
+            dt = datetime.fromisoformat(str(date_time).replace('Z', '+00:00'))
+            formatted_date = dt.strftime('%A, %B %d, %Y at %I:%M %p')
+        except (TypeError, ValueError):
+            formatted_date = str(date_time)
+
     emit('date_proposed', {
         'session_id': session_id,
-        'message': 'Your partner has proposed a date!'
+        'message': 'Your partner has proposed a date!',
+        'date_time': date_time,
+        'formatted_date': formatted_date,
+        'location': location or '',
     }, room=str(partner_id))
 
 
@@ -1606,6 +1840,77 @@ def get_messages():
     } for msg in messages]
 
     return jsonify({'messages': message_list}), 200
+
+
+@app.route('/remove_match', methods=['POST'])
+@jwt_required()
+def remove_match():
+    """Remove/unmatch a matched session (soft-delete by marking 'removed')."""
+    current_user_id = get_current_user_id()
+    data = request.get_json(silent=True) or {}
+    session_id = data.get('session_id')
+    partner_id = data.get('partner_id')
+
+    if not session_id or not partner_id:
+        return jsonify({'message': 'session_id and partner_id are required'}), 400
+
+    session = MatchSession.query.filter_by(session_id=session_id).first()
+    if not session:
+        return jsonify({'message': 'Match session not found'}), 404
+
+    # Verify the current user is part of this session
+    if current_user_id not in (session.user1_id, session.user2_id):
+        return jsonify({'message': 'Unauthorized'}), 403
+
+    session.status = 'removed'
+    db.session.commit()
+
+    logger.info('Match removed', extra={
+        'session_id': session_id,
+        'removed_by': current_user_id,
+        'partner_id': partner_id
+    })
+
+    return jsonify({'message': 'Match removed successfully'}), 200
+
+
+@app.route('/report_user', methods=['POST'])
+@jwt_required()
+def report_user():
+    """Report a user and block them from matching with you again."""
+    current_user_id = get_current_user_id()
+    data = request.get_json(silent=True) or {}
+    blocked_id = data.get('blocked_id')
+    reason = data.get('reason', '').strip()
+
+    if not blocked_id:
+        return jsonify({'message': 'blocked_id is required'}), 400
+    if int(blocked_id) == current_user_id:
+        return jsonify({'message': 'Cannot report yourself'}), 400
+
+    # Check if already blocked
+    existing = BlockedUser.query.filter_by(
+        reporter_id=current_user_id,
+        blocked_id=int(blocked_id)
+    ).first()
+    if existing:
+        return jsonify({'message': 'User already reported'}), 200
+
+    new_block = BlockedUser(
+        reporter_id=current_user_id,
+        blocked_id=int(blocked_id),
+        reason=reason if reason else None
+    )
+    db.session.add(new_block)
+    db.session.commit()
+
+    logger.info('User reported', extra={
+        'reporter_id': current_user_id,
+        'blocked_id': blocked_id,
+        'reason': reason
+    })
+
+    return jsonify({'message': 'User reported successfully'}), 200
 
 
 @app.route('/get_matches', methods=['GET'])

@@ -6,7 +6,7 @@ import closeButtonImage from '../close.jpg';
 
 function SignIn() {
   const { setCurrentUser, setToken } = useContext(UserContext);
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -14,6 +14,7 @@ function SignIn() {
   const [resetEmail, setResetEmail] = useState('');
   const [showReset, setShowReset] = useState(false);
   const [resetMessage, setResetMessage] = useState('');
+  const [showVerifyNotice, setShowVerifyNotice] = useState(false);
 
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
@@ -25,15 +26,16 @@ function SignIn() {
     }
   }, [setToken, setCurrentUser]);
 
-  const handleLogin = async (username, password) => {
+  const handleLogin = async (email, password) => {
     setIsLoading(true);
     setErrorMessage('');
+    setShowVerifyNotice(false);
 
     try {
-      const response = await ApiService.login(username, password);
+      const response = await ApiService.login(email, password);
       setToken(response.data.access_token);
       // Use full user object from backend response (includes all profile fields)
-      const user = response.data.user || { username, id: response.data.user_id };
+      const user = response.data.user || { username: response.data.username, id: response.data.user_id };
       setCurrentUser(user);
 
       localStorage.setItem('token', response.data.access_token);
@@ -42,6 +44,9 @@ function SignIn() {
       setShowSignInForm(false);
     } catch (error) {
       if (error.response && error.response.data) {
+        if (error.response.data.email_not_verified) {
+          setShowVerifyNotice(true);
+        }
         setErrorMessage(error.response.data.message);
       } else {
         console.error('Error during login:', error);
@@ -62,7 +67,7 @@ function SignIn() {
 
   const handleKeyPress = (e) => {
     if (e.key === 'Enter') {
-      handleLogin(username, password);
+      handleLogin(email, password);
     }
   };
 
@@ -108,14 +113,14 @@ function SignIn() {
           <h2>Sign In</h2>
           <div className='user-box'>
             <input
-              type="text"
-              id="user_name"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              type="email"
+              id="user_email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="Username"
+              placeholder="Email"
             />
-            <label htmlFor="user_name">Username</label>
+            <label htmlFor="user_email">Email</label>
           </div>
           <div className='user-box'>
             <input
@@ -132,8 +137,13 @@ function SignIn() {
             </button>
           </div>
           {errorMessage && <div className="error-message">{errorMessage}</div>}
+          {showVerifyNotice && (
+            <div className="success-message" style={{ color: '#ffd93d', fontSize: '13px', marginTop: '8px' }}>
+              ⚠️ Please verify your email before logging in. Check your inbox for the verification code.
+            </div>
+          )}
           <div className='signin-container-button'>
-            <button className='btn-1' onClick={() => handleLogin(username, password)} disabled={isLoading}>
+            <button className='btn-1' onClick={() => handleLogin(email, password)} disabled={isLoading}>
               {isLoading ? 'Signing in...' : 'Sign In'}
             </button>
           </div>

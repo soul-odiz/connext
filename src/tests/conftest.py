@@ -106,15 +106,26 @@ def registered_user(client):
     import uuid
     suffix = uuid.uuid4().hex[:6]
     username = f'testuser_{suffix}'
+    email = f'{username}@test.com'
     r = client.post('/register', data={
         'username': username, 'password': 'testpass123', 'age': '25',
         'gender': 'male', 'city': 'Tel Aviv', 'preferredGender': 'female',
         'preferredAgeRange[min]': '20', 'preferredAgeRange[max]': '35',
         'interests': '["music", "travel"]', 'bio': 'Test bio',
+        'email': email,
     })
     assert r.status_code == 201, f'Registration failed: {r.get_json()}'
 
-    r = client.post('/login', json={'username': username, 'password': 'testpass123'})
+    # Manually verify the email for test users
+    from app import User, db
+    user = User.query.filter_by(email=email).first()
+    if user:
+        user.email_verified = True
+        user.verification_code = None
+        user.verification_code_expires = None
+        db.session.commit()
+
+    r = client.post('/login', json={'email': email, 'password': 'testpass123'})
     assert r.status_code == 200
     d = r.get_json()
     return {'id': d['user_id'], 'username': d['username'], 'token': d['access_token']}
@@ -126,15 +137,26 @@ def second_user(client):
     import uuid
     suffix = uuid.uuid4().hex[:6]
     username = f'seconduser_{suffix}'
+    email = f'{username}@test.com'
     r = client.post('/register', data={
         'username': username, 'password': 'testpass456', 'age': '28',
         'gender': 'female', 'city': 'Jerusalem', 'preferredGender': 'male',
         'preferredAgeRange[min]': '22', 'preferredAgeRange[max]': '40',
         'interests': '["reading", "hiking"]', 'bio': 'Second user',
+        'email': email,
     })
     assert r.status_code == 201
 
-    r = client.post('/login', json={'username': username, 'password': 'testpass456'})
+    # Manually verify the email for test users
+    from app import User, db
+    user = User.query.filter_by(email=email).first()
+    if user:
+        user.email_verified = True
+        user.verification_code = None
+        user.verification_code_expires = None
+        db.session.commit()
+
+    r = client.post('/login', json={'email': email, 'password': 'testpass456'})
     assert r.status_code == 200
     d = r.get_json()
     return {'id': d['user_id'], 'username': d['username'], 'token': d['access_token']}
